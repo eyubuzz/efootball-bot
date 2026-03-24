@@ -54,6 +54,7 @@ def init_db():
     # Migrations for existing databases
     for migration in [
         "ALTER TABLE questions ADD COLUMN channel_msg_id INTEGER",
+        "ALTER TABLE questions ADD COLUMN photo_file_id  TEXT",
     ]:
         try:
             c.execute(migration)
@@ -66,12 +67,12 @@ def init_db():
 
 # ── Questions ─────────────────────────────────────────────────────────────────
 
-def save_question(user_id: int, username: str, full_name: str, question: str) -> int:
+def save_question(user_id: int, username: str, full_name: str, question: str, photo_file_id: str = None) -> int:
     conn = _conn()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO questions (user_id, username, full_name, question, status, created_at) VALUES (?,?,?,?,'pending',?)",
-        (user_id, username, full_name, question, datetime.now().isoformat()),
+        "INSERT INTO questions (user_id, username, full_name, question, photo_file_id, status, created_at) VALUES (?,?,?,?,?,'pending',?)",
+        (user_id, username, full_name, question, photo_file_id, datetime.now().isoformat()),
     )
     qid = c.lastrowid
     conn.commit()

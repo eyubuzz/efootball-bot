@@ -45,15 +45,18 @@ WAITING_COMMENT  = 2
 # ── Constants ─────────────────────────────────────────────────────────────────
 COMMENTS_PER_PAGE = 3
 
+# TAGS: key → (display_label, hashtag)
 TAGS = {
-    "teambuildup": "🏗️ Team Build-up",
-    "formation":   "📐 Formation",
-    "packs":       "🎁 Opening Packs",
-    "tactics":     "🎯 Tactics",
-    "player":      "⭐ Player Review",
-    "budget":      "💰 Budget Build",
-    "general":     "🔧 General",
+    "teambuildup": ("🏗️ Team Build-up", "#TeamBuildup"),
+    "formation":   ("📐 Formation",      "#Formation"),
+    "packs":       ("🎁 Opening Packs",  "#OpeningPacks"),
+    "tactics":     ("🎯 Tactics",        "#Tactics"),
+    "player":      ("⭐ Player Review",  "#PlayerReview"),
+    "budget":      ("💰 Budget Build",   "#BudgetBuild"),
+    "general":     ("🔧 General",        "#General"),
 }
+
+POWERED_BY = "\n\n*Powered By* [eBuzzNation](https://t.me/ebuzznation)"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [["✏️ Ask Question"], ["👤 Profile", "ℹ️ Help"]],
@@ -67,7 +70,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 def tag_selection_keyboard(question_id: int) -> InlineKeyboardMarkup:
     buttons, row = [], []
-    for key, label in TAGS.items():
+    for key, (label, _) in TAGS.items():
         row.append(InlineKeyboardButton(label, callback_data=f"settag_{question_id}_{key}"))
         if len(row) == 2:
             buttons.append(row)
@@ -91,7 +94,7 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
     if not row:
         return "⚠️ Question not found.", InlineKeyboardMarkup([])
 
-    tag_label  = TAGS.get(row["tag"] or "", "")
+    tag_label, tag_hashtag = TAGS.get(row["tag"] or "", ("", ""))
     comments, total = get_comments_page(question_id, page, COMMENTS_PER_PAGE)
     total_pages = max(1, (total + COMMENTS_PER_PAGE - 1) // COMMENTS_PER_PAGE)
     page = max(1, min(page, total_pages))
@@ -100,7 +103,7 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
         f"💬 *eFootball Question #{question_id}*",
     ]
     if tag_label:
-        lines.append(f"_{tag_label}_")
+        lines.append(f"_{tag_label}_ {tag_hashtag}")
     lines.append(f"Displaying page {page}/{total_pages}. Total {total} Comment{'s' if total != 1 else ''}")
     lines.append("─" * 24)
 
@@ -196,8 +199,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👍 / 👎 — vote on comments to earn / give *Aura* points.\n"
         "👤 *Profile* — see your stats and Aura.\n\n"
         "*Topic tags used in the channel:*\n"
-        "🏗️ Team Build-up  |  📐 Formation  |  🎁 Opening Packs\n"
-        "🎯 Tactics  |  ⭐ Player Review  |  💰 Budget Build  |  🔧 General",
+        "🏗️ #TeamBuildup  |  📐 #Formation  |  🎁 #OpeningPacks\n"
+        "🎯 #Tactics  |  ⭐ #PlayerReview  |  💰 #BudgetBuild  |  🔧 #General",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -226,11 +229,55 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✏️ *What's your eFootball question?*\n\n"
-        "Type it below (10–600 characters).\n"
+        "Type it below (10–600 characters), or send a photo with a caption.\n"
         "Send /cancel to go back.",
         parse_mode="Markdown",
     )
     return WAITING_QUESTION
+
+
+async def _submit_question(update, context, text: str, photo_file_id: str = None):
+    """Save question, confirm to user, and notify admin."""
+    user = update.effective_user
+    qid = save_question(
+        user_id=user.id,
+        username=user.username or "",
+        full_name=user.full_name or "Unknown",
+        question=text,
+        photo_file_id=photo_file_id,
+    )
+
+    await update.message.reply_text(
+        f"✅ *Question submitted!*\n\n"
+        f"🆔 ID: `#{qid}`\n"
+        f"⏳ Pending admin review — you'll be notified once it's posted.",
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+    user_tag = f" (@{user.username})" if user.username else ""
+    admin_caption = (
+        f"🔔 *New Question — #{qid}*\n\n"
+        f"👤 *From:* {user.full_name}{user_tag}\n"
+        f"🆔 *User ID:* `{user.id}`\n\n"
+        f"❓ *Question:*\n{text}"
+    )
+    if photo_file_id:
+        await context.bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=photo_file_id,
+            caption=admin_caption,
+            reply_markup=review_keyboard(qid),
+            parse_mode="Markdown",
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=admin_caption,
+            reply_markup=review_keyboard(qid),
+            parse_mode="Markdown",
+        )
+    return ConversationHandler.END
 
 
 async def ask_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,36 +291,25 @@ async def ask_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Too long (max 600 chars). Please shorten your question.")
         return WAITING_QUESTION
 
-    user = update.effective_user
-    qid  = save_question(
-        user_id=user.id,
-        username=user.username or "",
-        full_name=user.full_name or "Unknown",
-        question=text,
-    )
+    return await _submit_question(update, context, text)
 
-    await update.message.reply_text(
-        f"✅ *Question submitted!*\n\n"
-        f"🆔 ID: `#{qid}`\n"
-        f"⏳ Pending admin review — you'll be notified once it's posted.",
-        parse_mode="Markdown",
-        reply_markup=MAIN_KEYBOARD,
-    )
 
-    # Notify admin
-    user_tag = f" (@{user.username})" if user.username else ""
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=(
-            f"🔔 *New Question — #{qid}*\n\n"
-            f"👤 *From:* {user.full_name}{user_tag}\n"
-            f"🆔 *User ID:* `{user.id}`\n\n"
-            f"❓ *Question:*\n{text}"
-        ),
-        reply_markup=review_keyboard(qid),
-        parse_mode="Markdown",
-    )
-    return ConversationHandler.END
+async def ask_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    caption = (update.message.caption or "").strip()
+
+    if len(caption) < 10:
+        await update.message.reply_text(
+            "⚠️ Please add a caption describing your question (min 10 characters).\n"
+            "Send the photo again with a caption, or just type your question as text."
+        )
+        return WAITING_QUESTION
+
+    if len(caption) > 600:
+        await update.message.reply_text("⚠️ Caption too long (max 600 chars). Please shorten it.")
+        return WAITING_QUESTION
+
+    photo_file_id = update.message.photo[-1].file_id
+    return await _submit_question(update, context, caption, photo_file_id)
 
 
 # ── Add Comment (conversation) ────────────────────────────────────────────────
@@ -465,26 +501,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"⚠️ Already {row['status']}.")
             return
 
-        tag_label   = TAGS.get(tag_key, "🔧 General")
-        tag_hashtag = "#" + tag_key
+        tag_label, tag_hashtag = TAGS.get(tag_key, ("🔧 General", "#General"))
         update_status(question_id, "approved", tag_key)
 
-        # Post to channel
-        channel_text = (
+        channel_caption = (
             f"{tag_label}\n\n"
             f"❓ *eFootball Question #{question_id}*\n\n"
             f"{row['question']}\n\n"
             f"{tag_hashtag}"
+            f"{POWERED_BY}"
         )
         bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
-        msg = await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=channel_text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("💬 View / Add Comments (0)", url=bot_link)
-            ]]),
-        )
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("💬 View / Add Comments (0)", url=bot_link)]])
+
+        # Post to channel — photo or text
+        if row["photo_file_id"]:
+            msg = await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=row["photo_file_id"],
+                caption=channel_caption,
+                parse_mode="Markdown",
+                reply_markup=btn,
+            )
+        else:
+            msg = await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=channel_caption,
+                parse_mode="Markdown",
+                reply_markup=btn,
+            )
         set_channel_msg_id(question_id, msg.message_id)
 
         # Notify question author
@@ -576,8 +621,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unsupported_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚠️ This bot only accepts text messages.\n\n"
-        "Use *✏️ Ask Question* to submit your question in text.",
+        "⚠️ This bot only accepts text or photo messages.\n\n"
+        "Use *✏️ Ask Question* to submit your question.",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -594,7 +639,10 @@ def main():
             MessageHandler(filters.Text(["✏️ Ask Question"]), ask_start),
         ],
         states={
-            WAITING_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_receive)],
+            WAITING_QUESTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_receive),
+                MessageHandler(filters.PHOTO, ask_receive_photo),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
@@ -624,8 +672,8 @@ def main():
     app.add_handler(MessageHandler(filters.Text(["👤 Profile"]),  profile_command))
     app.add_handler(MessageHandler(filters.Text(["ℹ️ Help"]),     help_command))
 
-    # Unsupported media
-    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.VOICE | filters.Sticker.ALL, unsupported_media))
+    # Unsupported media (photos are handled in the ask conversation above)
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL | filters.VOICE | filters.Sticker.ALL, unsupported_media))
 
     # Inline callback (view, vote, admin approve/reject)
     app.add_handler(CallbackQueryHandler(button_callback))

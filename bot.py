@@ -574,6 +574,15 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+async def unsupported_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "⚠️ This bot only accepts text messages.\n\n"
+        "Use *✏️ Ask Question* to submit your question in text.",
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
 def main():
     init_db()
 
@@ -614,6 +623,9 @@ def main():
     # Reply keyboard shortcuts
     app.add_handler(MessageHandler(filters.Text(["👤 Profile"]),  profile_command))
     app.add_handler(MessageHandler(filters.Text(["ℹ️ Help"]),     help_command))
+
+    # Unsupported media
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.VOICE | filters.Sticker.ALL, unsupported_media))
 
     # Inline callback (view, vote, admin approve/reject)
     app.add_handler(CallbackQueryHandler(button_callback))

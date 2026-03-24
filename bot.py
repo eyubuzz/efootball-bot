@@ -9,13 +9,62 @@ from telegram.ext import (
 )
 
 from config import ADMIN_ID, BOT_TOKEN, CHANNEL_ID
-from database import get_question, get_stats, init_db, save_question, update_status
+from database import (
+    get_comments,
+    get_question,
+    get_stats,
+    init_db,
+    save_comment,
+    save_question,
+    update_status,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Tags the admin can assign when approving a question
+# ---------------------------------------------------------------------------
+TAGS = {
+    "teambuildup": "🏗️ Team Build-up",
+    "formation":   "📐 Formation",
+    "packs":       "🎁 Opening Packs",
+    "tactics":     "🎯 Tactics",
+    "player":      "⭐ Player Review",
+    "budget":      "💰 Budget Build",
+    "general":     "🔧 General",
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def tag_selection_keyboard(question_id: int) -> InlineKeyboardMarkup:
+    """Build the tag selection keyboard shown to the admin."""
+    buttons = []
+    row = []
+    for key, label in TAGS.items():
+        row.append(InlineKeyboardButton(label, callback_data=f"settag_{question_id}_{key}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    # Cancel / back to reject
+    buttons.append([InlineKeyboardButton("❌ Reject Instead", callback_data=f"reject_{question_id}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def review_keyboard(question_id: int) -> InlineKeyboardMarkup:
+    """Initial keyboard shown to admin for a new question."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🏷️ Tag & Approve", callback_data=f"tag_{question_id}"),
+        InlineKeyboardButton("❌ Reject",         callback_data=f"reject_{question_id}"),
+    ]])
 
 
 # ---------------------------------------------------------------------------
@@ -24,31 +73,32 @@ logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 *Welcome to the eFootball Team Building Bot!*\n\n"
-        "Got a question about squad building, formations, player picks, or tactics?\n"
-        "Submit it with /ask and the admin will review it.\n\n"
-        "✅ Approved questions get posted to the channel!\n\n"
-        "📌 Commands:\n"
+        "👋 *Welcome to the eFootball Q&A Bot!*\n\n"
+        "Ask anything about eFootball — team building, formations, packs, and more.\n\n"
+        "📌 *Commands:*\n"
         "/ask <your question> — submit a question\n"
-        "/help — show usage guide",
+        "/comment <question ID> <your comment> — comment on a question\n"
+        "/comments <question ID> — view all comments on a question\n"
+        "/help — show this guide",
         parse_mode="Markdown",
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📖 *How it works:*\n\n"
-        "1️⃣ Send /ask followed by your question\n"
-        "2️⃣ The admin reviews it\n"
-        "3️⃣ If approved, it's posted to the channel automatically\n\n"
-        "*Topics we love:*\n"
-        "⚽ Team building & squad tips\n"
-        "🏆 Best formations & roles\n"
-        "💡 Player recommendations\n"
-        "🎯 Skill moves & manager tactics\n"
-        "📊 Coin & GP management\n\n"
-        "*Example:*\n"
-        "`/ask What's the best 4-3-3 pressing setup in eFootball 2025?`",
+        "📖 *How to use this bot:*\n\n"
+        "*Submit a question:*\n"
+        "`/ask What's the best formation for counter-attack?`\n\n"
+        "*Comment on a question:*\n"
+        "`/comment 5 I use 4-3-3 and it works great!`\n\n"
+        "*See comments on a question:*\n"
+        "`/comments 5`\n\n"
+        "✅ Approved questions are posted to the channel with a topic tag.\n"
+        "💬 Anyone can comment on any approved question.\n\n"
+        "*Tags used in the channel:*\n"
+        "🏗️ Team Build-up  |  📐 Formation\n"
+        "🎁 Opening Packs  |  🎯 Tactics\n"
+        "⭐ Player Review   |  💰 Budget Build  |  🔧 General",
         parse_mode="Markdown",
     )
 
@@ -56,8 +106,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
-            "❓ Please write your question after /ask\n\n"
-            "Example:\n`/ask What's the best budget team for Division 1?`",
+            "❓ Write your question after /ask\n\n"
+            "Example:\n`/ask What's the best 4-3-3 pressing setup in eFootball 2025?`",
             parse_mode="Markdown",
         )
         return
@@ -65,15 +115,11 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question_text = " ".join(context.args).strip()
 
     if len(question_text) < 10:
-        await update.message.reply_text(
-            "⚠️ Your question is too short. Please add more detail."
-        )
+        await update.message.reply_text("⚠️ Your question is too short. Please add more detail.")
         return
 
     if len(question_text) > 600:
-        await update.message.reply_text(
-            "⚠️ Your question is too long (max 600 characters). Please shorten it."
-        )
+        await update.message.reply_text("⚠️ Max 600 characters. Please shorten your question.")
         return
 
     user = update.effective_user
@@ -84,22 +130,14 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         question=question_text,
     )
 
-    # Confirm to user
     await update.message.reply_text(
         f"✅ *Question submitted!*\n\n"
         f"🆔 Question ID: `#{question_id}`\n"
-        f"⏳ Pending admin review — you'll be notified once it's approved or rejected.",
+        f"⏳ Pending admin review — you'll be notified once it's posted.",
         parse_mode="Markdown",
     )
 
-    # Notify admin with approve/reject buttons
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{question_id}"),
-            InlineKeyboardButton("❌ Reject",  callback_data=f"reject_{question_id}"),
-        ]
-    ])
-
+    # Notify admin
     user_tag = f" (@{user.username})" if user.username else ""
     admin_text = (
         f"🔔 *New Question — #{question_id}*\n\n"
@@ -107,17 +145,153 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 *User ID:* `{user.id}`\n\n"
         f"❓ *Question:*\n{question_text}"
     )
-
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=admin_text,
-        reply_markup=keyboard,
+        reply_markup=review_keyboard(question_id),
         parse_mode="Markdown",
     )
 
 
+async def comment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Usage: /comment <question_id> <your comment>"""
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "💬 Usage: `/comment <question ID> <your comment>`\n\n"
+            "Example: `/comment 3 I use 4-2-3-1 and it works!`",
+            parse_mode="Markdown",
+        )
+        return
+
+    raw_id = context.args[0]
+    if not raw_id.isdigit():
+        await update.message.reply_text("⚠️ The question ID must be a number. Example: `/comment 3 your text`", parse_mode="Markdown")
+        return
+
+    question_id = int(raw_id)
+    comment_text = " ".join(context.args[1:]).strip()
+
+    if len(comment_text) < 3:
+        await update.message.reply_text("⚠️ Comment is too short.")
+        return
+
+    if len(comment_text) > 500:
+        await update.message.reply_text("⚠️ Comment is too long (max 500 characters).")
+        return
+
+    row = get_question(question_id)
+    if not row:
+        await update.message.reply_text(f"⚠️ Question #{question_id} does not exist.")
+        return
+
+    # row: (id, user_id, username, full_name, question, status, tag, created_at, answered_at)
+    _, q_user_id, _, _, question_text, status, tag, *_ = row
+
+    if status != "approved":
+        await update.message.reply_text(
+            f"⚠️ You can only comment on approved questions. Question #{question_id} has not been approved yet."
+        )
+        return
+
+    user = update.effective_user
+    save_comment(
+        question_id=question_id,
+        user_id=user.id,
+        username=user.username or "",
+        full_name=user.full_name or "Unknown",
+        comment=comment_text,
+    )
+
+    await update.message.reply_text(
+        f"✅ *Comment posted on Question #{question_id}!*\n\n"
+        f"Use /comments {question_id} to see all comments.",
+        parse_mode="Markdown",
+    )
+
+    # Notify the question author (if not commenting on their own question)
+    if user.id != q_user_id:
+        try:
+            await context.bot.send_message(
+                chat_id=q_user_id,
+                text=(
+                    f"💬 *Someone commented on your question #{question_id}!*\n\n"
+                    f"❓ *Question:* {question_text}\n\n"
+                    f"💬 *Comment by {user.full_name}:*\n{comment_text}\n\n"
+                    f"Use /comments {question_id} to see all comments."
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass  # user may have blocked the bot
+
+    # Also notify admin of the comment
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"💬 *New comment on Question #{question_id}*\n\n"
+                f"👤 By: {user.full_name}{' (@' + user.username + ')' if user.username else ''}\n"
+                f"❓ Question: {question_text}\n\n"
+                f"💬 {comment_text}"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+
+
+async def comments_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Usage: /comments <question_id>"""
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "💬 Usage: `/comments <question ID>`\n\nExample: `/comments 3`",
+            parse_mode="Markdown",
+        )
+        return
+
+    question_id = int(context.args[0])
+    row = get_question(question_id)
+    if not row:
+        await update.message.reply_text(f"⚠️ Question #{question_id} not found.")
+        return
+
+    _, _, _, _, question_text, status, tag, *_ = row
+
+    if status != "approved":
+        await update.message.reply_text(f"⚠️ Question #{question_id} has not been approved yet.")
+        return
+
+    comments = get_comments(question_id)
+    tag_label = TAGS.get(tag, "")
+
+    header = (
+        f"❓ *Question #{question_id}*"
+        + (f"  {tag_label}" if tag_label else "")
+        + f"\n{question_text}\n"
+        + "─" * 30
+    )
+
+    if not comments:
+        await update.message.reply_text(
+            header + "\n\n💬 No comments yet. Be the first!\n\n"
+            f"Use: `/comment {question_id} your comment`",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = [header, ""]
+    for i, (full_name, username, comment, created_at) in enumerate(comments, 1):
+        name_tag = f" (@{username})" if username else ""
+        lines.append(f"*{i}. {full_name}{name_tag}*\n{comment}\n")
+
+    lines.append(f"─" * 30)
+    lines.append(f"💬 To comment: `/comment {question_id} your text`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 # ---------------------------------------------------------------------------
-# Admin: approve / reject callback
+# Admin: approve/reject + tag selection callbacks
 # ---------------------------------------------------------------------------
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,33 +302,55 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
+    data = query.data
 
-    action, raw_id = query.data.split("_", 1)
-    question_id = int(raw_id)
+    # ── Step 1: admin clicks "Tag & Approve" → show tag menu ──
+    if data.startswith("tag_"):
+        question_id = int(data.split("_", 1)[1])
+        row = get_question(question_id)
+        if not row:
+            await query.edit_message_text("⚠️ Question not found.")
+            return
 
-    row = get_question(question_id)
-    if not row:
-        await query.edit_message_text("⚠️ Question not found in database.")
-        return
+        _, _, _, full_name, question_text, status, *_ = row
+        if status != "pending":
+            await query.edit_message_text(f"⚠️ Question #{question_id} already {status}.")
+            return
 
-    # row: (id, user_id, username, full_name, question, status, created_at, answered_at)
-    _, user_id, _, full_name, question_text, status, *_ = row
-
-    if status != "pending":
         await query.edit_message_text(
-            f"⚠️ Question #{question_id} was already *{status}*.",
+            f"🏷️ *Select a tag for Question #{question_id}*\n\n"
+            f"👤 {full_name}\n"
+            f"❓ {question_text}\n\n"
+            f"Choose the topic that best fits this question:",
+            reply_markup=tag_selection_keyboard(question_id),
             parse_mode="Markdown",
         )
-        return
 
-    if action == "approve":
-        update_status(question_id, "approved")
+    # ── Step 2: admin picks a tag → approve + post to channel ──
+    elif data.startswith("settag_"):
+        parts = data.split("_", 2)
+        question_id = int(parts[1])
+        tag_key = parts[2]
+
+        row = get_question(question_id)
+        if not row:
+            await query.edit_message_text("⚠️ Question not found.")
+            return
+
+        _, user_id, _, full_name, question_text, status, *_ = row
+        if status != "pending":
+            await query.edit_message_text(f"⚠️ Question #{question_id} already {status}.")
+            return
+
+        tag_label = TAGS.get(tag_key, "🔧 General")
+        update_status(question_id, "approved", tag_key)
 
         # Post to channel
         channel_post = (
-            f"❓ *eFootball Team Building Q&A*\n\n"
+            f"{tag_label}\n\n"
+            f"❓ *eFootball Question #{question_id}*\n\n"
             f"{question_text}\n\n"
-            f"💬 Drop your tips and strategies in the comments!"
+            f"💬 Comment via the bot: /comment {question_id} your answer"
         )
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
@@ -167,22 +363,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=user_id,
                 text=(
-                    f"🎉 *Your question was approved and posted to the channel!*\n\n"
-                    f"❓ {question_text}"
+                    f"🎉 *Your question was approved and posted!*\n\n"
+                    f"🏷️ Tag: {tag_label}\n"
+                    f"❓ {question_text}\n\n"
+                    f"People can now comment on it using:\n"
+                    f"`/comment {question_id} their answer`"
                 ),
                 parse_mode="Markdown",
             )
         except Exception:
-            pass  # user may have blocked the bot
+            pass
 
         await query.edit_message_text(
-            f"✅ *Approved & posted — #{question_id}*\n\n"
+            f"✅ *Approved & Posted — #{question_id}*\n\n"
+            f"🏷️ Tag: {tag_label}\n"
             f"👤 {full_name}\n"
-            f"❓ {question_text}",
+            f"❓ {question_text}\n\n"
+            f"📢 Posted to channel!",
             parse_mode="Markdown",
         )
 
-    elif action == "reject":
+    # ── Reject ──
+    elif data.startswith("reject_"):
+        question_id = int(data.split("_", 1)[1])
+        row = get_question(question_id)
+        if not row:
+            await query.edit_message_text("⚠️ Question not found.")
+            return
+
+        _, user_id, _, full_name, question_text, status, *_ = row
+        if status != "pending":
+            await query.edit_message_text(f"⚠️ Question #{question_id} already {status}.")
+            return
+
         update_status(question_id, "rejected")
 
         try:
@@ -207,7 +420,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# Admin: stats command
+# Admin: stats
 # ---------------------------------------------------------------------------
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -241,10 +454,12 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help",  help_command))
-    app.add_handler(CommandHandler("ask",   ask))
-    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("start",    start))
+    app.add_handler(CommandHandler("help",     help_command))
+    app.add_handler(CommandHandler("ask",      ask))
+    app.add_handler(CommandHandler("comment",  comment_command))
+    app.add_handler(CommandHandler("comments", comments_command))
+    app.add_handler(CommandHandler("stats",    stats))
     app.add_handler(CallbackQueryHandler(button_callback))
 
     logger.info("eFootball bot is running...")

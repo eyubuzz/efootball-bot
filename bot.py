@@ -58,6 +58,7 @@ TAGS = {
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [["✏️ Ask Question"], ["👤 Profile", "ℹ️ Help"]],
     resize_keyboard=True,
+    is_persistent=True,
     input_field_placeholder="Choose an option…",
 )
 
@@ -125,15 +126,13 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
             InlineKeyboardButton(f"↩️ Reply #{i}",    callback_data=f"rp_{c['id']}_{question_id}_{page}"),
         ])
 
-    # Navigation row
-    nav = []
-    if page > 1:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"vc_{question_id}_{page - 1}"))
-    nav.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
-    if page < total_pages:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"vc_{question_id}_{page + 1}"))
-    if nav:
-        buttons.append(nav)
+    # Navigation row — always 3 buttons to keep layout stable
+    nav = [
+        InlineKeyboardButton("⬅️ Prev",  callback_data=f"vc_{question_id}_{page - 1}") if page > 1       else InlineKeyboardButton(" ", callback_data="noop"),
+        InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"),
+        InlineKeyboardButton("Next ➡️", callback_data=f"vc_{question_id}_{page + 1}") if page < total_pages else InlineKeyboardButton(" ", callback_data="noop"),
+    ]
+    buttons.append(nav)
 
     buttons.append([InlineKeyboardButton("➕ Add Comment", callback_data=f"ac_{question_id}")])
 
@@ -580,22 +579,33 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Conversation handler (question submission + comment submission)
-    conv = ConversationHandler(
+    # Conversation handler: question submission
+    ask_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Text(["✏️ Ask Question"]), ask_start),
+        ],
+        states={
+            WAITING_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_receive)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+
+    # Conversation handler: comment / reply submission
+    comment_conv = ConversationHandler(
+        entry_points=[
             CallbackQueryHandler(comment_start, pattern=r"^ac_\d+$"),
             CallbackQueryHandler(reply_start,   pattern=r"^rp_\d+_\d+_\d+$"),
         ],
         states={
-            WAITING_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_receive)],
-            WAITING_COMMENT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, comment_receive)],
+            WAITING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, comment_receive)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
+        allow_reentry=True,
     )
 
-    app.add_handler(conv)
+    app.add_handler(ask_conv)
+    app.add_handler(comment_conv)
     app.add_handler(CommandHandler("start",   start))
     app.add_handler(CommandHandler("help",    help_command))
     app.add_handler(CommandHandler("profile", profile_command))

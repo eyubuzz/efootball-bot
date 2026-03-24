@@ -1,3 +1,4 @@
+import html
 import logging
 
 from telegram import (
@@ -56,7 +57,7 @@ TAGS = {
     "general":     ("🔧 General",        "#General"),
 }
 
-POWERED_BY = "\n\n*Powered By [eBuzzNation](https://t.me/ebuzznation)*"
+POWERED_BY = '\n\n<b>Powered By <a href="https://t.me/ebuzznation">eBuzzNation</a></b>'
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [["✏️ Ask Question"], ["👤 Profile", "ℹ️ Help"]],
@@ -513,9 +514,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tag_label, tag_hashtag = TAGS.get(tag_key, ("🔧 General", "#General"))
         update_status(question_id, "approved", tag_key)
 
+        q_text = html.escape(row['question'])
         channel_caption = (
-            f"❓ *eFootball Question #{question_id}*\n\n"
-            f"{row['question']}\n\n"
+            f"❓ <b>eFootball Question #{question_id}</b>\n\n"
+            f"{q_text}\n\n"
             f"{tag_hashtag}"
             f"{POWERED_BY}"
         )
@@ -528,14 +530,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=CHANNEL_ID,
                 photo=row["photo_file_id"],
                 caption=channel_caption,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=btn,
             )
         else:
             msg = await context.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=channel_caption,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 disable_web_page_preview=True,
                 reply_markup=btn,
             )

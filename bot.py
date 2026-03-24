@@ -56,7 +56,7 @@ TAGS = {
     "general":     ("🔧 General",        "#General"),
 }
 
-POWERED_BY = "\n\n*Powered By* [eBuzzNation](https://t.me/ebuzznation)"
+POWERED_BY = "\n\n*Powered By [eBuzzNation](https://t.me/ebuzznation)*"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [["✏️ Ask Question"], ["👤 Profile", "ℹ️ Help"]],
@@ -86,6 +86,14 @@ def review_keyboard(question_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🏷️ Tag & Approve", callback_data=f"tag_{question_id}"),
         InlineKeyboardButton("❌ Reject",         callback_data=f"reject_{question_id}"),
     ]])
+
+
+async def _edit_admin_msg(query, text: str, parse_mode: str = None, reply_markup=None):
+    """Edit admin notification — handles both photo and text messages."""
+    if query.message.photo:
+        await query.edit_message_caption(caption=text, parse_mode=parse_mode, reply_markup=reply_markup)
+    else:
+        await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
 def build_comments_view(question_id: int, page: int, bot_username: str):
@@ -470,18 +478,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         question_id = int(data.split("_", 1)[1])
         row = get_question(question_id)
         if not row:
-            await query.edit_message_text("⚠️ Question not found.")
+            await _edit_admin_msg(query, "⚠️ Question not found.")
             return
         if row["status"] != "pending":
-            await query.edit_message_text(f"⚠️ Already {row['status']}.")
+            await _edit_admin_msg(query, f"⚠️ Already {row['status']}.")
             return
-        await query.edit_message_text(
+        await _edit_admin_msg(
+            query,
             f"🏷️ *Select tag for Question #{question_id}*\n\n"
             f"👤 {row['full_name']}\n"
             f"❓ {row['question']}\n\n"
             f"Choose the best topic:",
-            reply_markup=tag_selection_keyboard(question_id),
             parse_mode="Markdown",
+            reply_markup=tag_selection_keyboard(question_id),
         )
         return
 
@@ -495,17 +504,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         question_id = int(question_id)
         row = get_question(question_id)
         if not row:
-            await query.edit_message_text("⚠️ Question not found.")
+            await _edit_admin_msg(query, "⚠️ Question not found.")
             return
         if row["status"] != "pending":
-            await query.edit_message_text(f"⚠️ Already {row['status']}.")
+            await _edit_admin_msg(query, f"⚠️ Already {row['status']}.")
             return
 
         tag_label, tag_hashtag = TAGS.get(tag_key, ("🔧 General", "#General"))
         update_status(question_id, "approved", tag_key)
 
         channel_caption = (
-            f"{tag_label}\n\n"
             f"❓ *eFootball Question #{question_id}*\n\n"
             f"{row['question']}\n\n"
             f"{tag_hashtag}"
@@ -528,6 +536,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=CHANNEL_ID,
                 text=channel_caption,
                 parse_mode="Markdown",
+                disable_web_page_preview=True,
                 reply_markup=btn,
             )
         set_channel_msg_id(question_id, msg.message_id)
@@ -548,7 +557,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        await query.edit_message_text(
+        await _edit_admin_msg(
+            query,
             f"✅ *Approved & Posted — #{question_id}*\n\n"
             f"🏷️ {tag_label}\n"
             f"👤 {row['full_name']}\n"
@@ -567,10 +577,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         question_id = int(data.split("_", 1)[1])
         row = get_question(question_id)
         if not row:
-            await query.edit_message_text("⚠️ Question not found.")
+            await _edit_admin_msg(query, "⚠️ Question not found.")
             return
         if row["status"] != "pending":
-            await query.edit_message_text(f"⚠️ Already {row['status']}.")
+            await _edit_admin_msg(query, f"⚠️ Already {row['status']}.")
             return
         update_status(question_id, "rejected")
         try:
@@ -585,7 +595,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
-        await query.edit_message_text(
+        await _edit_admin_msg(
+            query,
             f"❌ *Rejected — #{question_id}*\n\n"
             f"👤 {row['full_name']}\n"
             f"❓ {row['question']}",

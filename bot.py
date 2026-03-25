@@ -1392,9 +1392,13 @@ async def broadcast_v2_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("⛔ Admin only.")
         return
 
-    user_ids = get_all_user_ids()
+    # Include admin in the broadcast list even if no one else has started yet
+    all_ids  = get_all_user_ids()
+    user_ids = list(dict.fromkeys(all_ids + [update.effective_user.id]))  # deduplicated
     if not user_ids:
-        await update.message.reply_text("No users found.")
+        await update.message.reply_text(
+            "⚠️ No users found yet. Ask users to start the bot with /start first, then broadcast."
+        )
         return
 
     status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users…")
@@ -1520,8 +1524,11 @@ def main():
     )
 
     # Group 0: comment_receive runs first for text/voice/photo.
-    # If no pending comment it exits immediately; groups are independent so ask_conv still fires.
-    _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND
+    # Exclude all reply-keyboard button texts so they reach their own handlers unblocked.
+    _keyboard_texts = filters.Text([
+        "✏️ Ask Question", "📋 My Status", "🔍 Discover", "👤 Profile", "ℹ️ Help",
+    ])
+    _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND & ~_keyboard_texts
     app.add_handler(MessageHandler(_comment_filter, comment_receive), group=0)
     app.add_handler(ask_conv,   group=1)
     app.add_handler(sched_conv, group=1)

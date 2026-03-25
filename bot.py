@@ -114,6 +114,20 @@ async def _edit_admin_msg(query, text: str, parse_mode: str = None, reply_markup
         await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
+async def _try_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int):
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+    except Exception:
+        pass
+
+
+async def _delete_last(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Delete the last tracked bot message for this user, if any."""
+    msg_id = context.user_data.pop("_last_msg", None)
+    if msg_id:
+        await _try_delete(context, chat_id, msg_id)
+
+
 def build_comments_view(question_id: int, page: int, bot_username: str):
     """Return (text, keyboard) for the given comments page."""
     row = get_question(question_id)
@@ -219,19 +233,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _show_user_card(update, context, target_id)
             return
 
-    await update.message.reply_text(
+    await _delete_last(context, update.effective_chat.id)
+    sent = await update.message.reply_text(
         "👋 *Welcome to the eFootball Q&A Bot!*\n\n"
         "Ask questions about team building, formations, packs & more.\n\n"
         "Use the menu below to get started 👇",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
+    context.user_data["_last_msg"] = sent.message_id
 
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    await _delete_last(context, update.effective_chat.id)
+    sent = await update.message.reply_text(
         "📖 *How to use this bot:*\n\n"
         "✏️ *Ask Question* — tap the menu button and type your eFootball question.\n"
         "💬 *Comments* — tap the button under any channel post to view and add comments.\n"
@@ -243,6 +260,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
+    context.user_data["_last_msg"] = sent.message_id
 
 
 # ── User card helper ──────────────────────────────────────────────────────────
@@ -287,7 +305,8 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name      = user.full_name or "Unknown"
     visible   = profile["visible"] if profile else 0
     vis_label = "🔓 Make Private" if visible else "🔒 Make Discoverable"
-    await update.message.reply_text(
+    await _delete_last(context, update.effective_chat.id)
+    sent = await update.message.reply_text(
         f"👤 *{name}*\n"
         f"──────────────────\n"
         f"⚡ Aura:           *{stats['aura']}*\n"
@@ -300,6 +319,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(vis_label, callback_data="toggle_visibility"),
         ]]),
     )
+    context.user_data["_last_msg"] = sent.message_id
 
 
 # ── Discover ──────────────────────────────────────────────────────────────────
@@ -319,12 +339,14 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
     users, total = get_discoverable_users(user.id, page=1)
+    await _delete_last(context, update.effective_chat.id)
     if not users:
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             "🔍 No discoverable users yet.\n\nMake your profile public via 👤 *Profile* to appear here.",
             parse_mode="Markdown",
             reply_markup=MAIN_KEYBOARD,
         )
+        context.user_data["_last_msg"] = sent.message_id
         return
     lines = ["🔍 *Discover Players*\n"]
     bot_username = context.bot.username
@@ -333,12 +355,13 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uname = f" (@{u['username']})" if u["username"] else ""
         link  = f"https://t.me/{bot_username}?start=u_{u['user_id']}"
         lines.append(f"• [{name}{uname}]({link})")
-    await update.message.reply_text(
+    sent = await update.message.reply_text(
         "\n".join(lines),
         parse_mode="Markdown",
         disable_web_page_preview=True,
         reply_markup=_discover_keyboard(1, total),
     )
+    context.user_data["_last_msg"] = sent.message_id
 
 
 # ── Admin: schedule post (conversation) ───────────────────────────────────────
@@ -347,24 +370,30 @@ async def sched_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Admin only.")
         return ConversationHandler.END
-    await update.message.reply_text(
+    await _delete_last(context, update.effective_chat.id)
+    sent = await update.message.reply_text(
         "📅 *Schedule a Channel Post*\n\n"
         "Send the post text (or a photo with caption).\n"
         "Send /cancel to abort.",
         parse_mode="Markdown",
     )
+    context.user_data["_conv_prompt"] = sent.message_id
     return SCHED_TEXT
 
 
 async def sched_receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["sched_text"] = update.message.text.strip()
     context.user_data["sched_photo"] = None
-    await update.message.reply_text(
+    prompt_id = context.user_data.pop("_conv_prompt", None)
+    if prompt_id:
+        await _try_delete(context, update.effective_chat.id, prompt_id)
+    sent = await update.message.reply_text(
         "⏰ When should it be posted?\n\n"
         "Send date/time in format: `YYYY-MM-DD HH:MM` (24h, UTC)\n"
         "Example: `2026-04-01 18:00`",
         parse_mode="Markdown",
     )
+    context.user_data["_conv_prompt"] = sent.message_id
     return SCHED_TIME
 
 
@@ -372,12 +401,16 @@ async def sched_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
     caption = (update.message.caption or "").strip()
     context.user_data["sched_text"] = caption
     context.user_data["sched_photo"] = update.message.photo[-1].file_id
-    await update.message.reply_text(
+    prompt_id = context.user_data.pop("_conv_prompt", None)
+    if prompt_id:
+        await _try_delete(context, update.effective_chat.id, prompt_id)
+    sent = await update.message.reply_text(
         "⏰ When should it be posted?\n\n"
         "Send date/time in format: `YYYY-MM-DD HH:MM` (UTC)\n"
         "Example: `2026-04-01 18:00`",
         parse_mode="Markdown",
     )
+    context.user_data["_conv_prompt"] = sent.message_id
     return SCHED_TIME
 
 
@@ -389,8 +422,11 @@ async def sched_receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except ValueError:
         await update.message.reply_text("⚠️ Invalid format. Use `YYYY-MM-DD HH:MM`.", parse_mode="Markdown")
         return SCHED_TIME
-    text      = context.user_data.get("sched_text", "")
-    photo     = context.user_data.get("sched_photo")
+    prompt_id = context.user_data.pop("_conv_prompt", None)
+    if prompt_id:
+        await _try_delete(context, update.effective_chat.id, prompt_id)
+    text  = context.user_data.get("sched_text", "")
+    photo = context.user_data.get("sched_photo")
     pid = save_scheduled_post(
         text=text,
         photo_file_id=photo,
@@ -398,23 +434,28 @@ async def sched_receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pin=False,
         scheduled_at=scheduled_at,
     )
-    await update.message.reply_text(
+    conf = await update.message.reply_text(
         f"✅ *Post #{pid} scheduled for {raw} UTC.*",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
+    context.user_data["_last_msg"] = conf.message_id
     return ConversationHandler.END
 
 
 # ── Ask Question (conversation) ───────────────────────────────────────────────
 
 async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    user = update.effective_user
+    ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+    await _delete_last(context, update.effective_chat.id)
+    sent = await update.message.reply_text(
         "✏️ *What's your eFootball question?*\n\n"
         "Type it below (10–600 characters), or send a photo with a caption.\n"
         "Send /cancel to go back.",
         parse_mode="Markdown",
     )
+    context.user_data["_conv_prompt"] = sent.message_id
     return WAITING_QUESTION
 
 
@@ -429,13 +470,18 @@ async def _submit_question(update, context, text: str, photo_file_id: str = None
         photo_file_id=photo_file_id,
     )
 
-    await update.message.reply_text(
+    prompt_id = context.user_data.pop("_conv_prompt", None)
+    if prompt_id:
+        await _try_delete(context, update.effective_chat.id, prompt_id)
+
+    conf = await update.message.reply_text(
         f"✅ *Question submitted!*\n\n"
         f"🆔 ID: `#{qid}`\n"
         f"⏳ Pending admin review — you'll be notified once it's posted.",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
+    context.user_data["_last_msg"] = conf.message_id
 
     user_tag = f" (@{user.username})" if user.username else ""
     admin_caption = (
@@ -507,12 +553,13 @@ async def comment_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data["comment_qid"] = question_id
-    await query.message.reply_text(
+    sent = await query.message.reply_text(
         f"💬 *Adding comment to Question #{question_id}*\n\n"
         f"Type your comment below (3–500 characters).\n"
         f"Send /cancel to go back.",
         parse_mode="Markdown",
     )
+    context.user_data["_conv_prompt"] = sent.message_id
     return WAITING_COMMENT
 
 
@@ -529,12 +576,13 @@ async def reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data["comment_qid"] = question_id
-    await query.message.reply_text(
+    sent = await query.message.reply_text(
         f"↩️ *Replying to a comment on Question #{question_id}*\n\n"
         f"Type your reply below (3–500 characters).\n"
         f"Send /cancel to go back.",
         parse_mode="Markdown",
     )
+    context.user_data["_conv_prompt"] = sent.message_id
     return WAITING_COMMENT
 
 
@@ -582,21 +630,31 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+    prompt_id = context.user_data.pop("_conv_prompt", None)
+    if prompt_id:
+        await _try_delete(context, update.effective_chat.id, prompt_id)
+
     count = get_comment_count(question_id)
     bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
-    await update.message.reply_text(
+    conf = await update.message.reply_text(
         f"✅ *Comment posted!*\n\n"
         f"[View all {count} comment{'s' if count != 1 else ''}]({bot_link})",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
         disable_web_page_preview=True,
     )
+    context.user_data["_last_msg"] = conf.message_id
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt_id = context.user_data.pop("_conv_prompt", None)
+    if prompt_id:
+        await _try_delete(context, update.effective_chat.id, prompt_id)
+    await _delete_last(context, update.effective_chat.id)
     context.user_data.clear()
-    await update.message.reply_text("Cancelled.", reply_markup=MAIN_KEYBOARD)
+    sent = await update.message.reply_text("Cancelled.", reply_markup=MAIN_KEYBOARD)
+    context.user_data["_last_msg"] = sent.message_id
     return ConversationHandler.END
 
 

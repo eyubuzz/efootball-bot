@@ -279,6 +279,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             question_id = None
         if question_id:
+            row = get_question(question_id)
+            if not row:
+                sent = await update.message.reply_text(
+                    "⚠️ This question is no longer available.",
+                    reply_markup=MAIN_KEYBOARD,
+                )
+                context.user_data["_last_msg"] = sent.message_id
+                return
             text, keyboard = build_comments_view(question_id, 1, context.bot.username)
             sent = await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
             context.user_data["_last_msg"] = sent.message_id
@@ -302,6 +310,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 context.user_data["_conv_prompt"] = sent.message_id
                 return
+            # Question not found or not approved
+            sent = await update.message.reply_text(
+                "⚠️ This question is no longer available.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            context.user_data["_last_msg"] = sent.message_id
+            return
 
     # Deep-link: /start u_<user_id>
     if args and args[0].startswith("u_"):
@@ -683,6 +698,17 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(text_body) > 500:
             await msg.reply_text("⚠️ Too long (max 500 chars). Please shorten.")
             return
+
+    # Validate question still exists
+    if not get_question(question_id):
+        context.user_data.pop("_awaiting_comment_qid", None)
+        context.user_data.pop("_conv_prompt", None)
+        sent = await msg.reply_text(
+            "⚠️ This question is no longer available.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        context.user_data["_last_msg"] = sent.message_id
+        return
 
     # Clear state
     context.user_data.pop("_awaiting_comment_qid", None)

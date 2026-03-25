@@ -17,6 +17,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    PicklePersistence,
     filters,
 )
 
@@ -1489,9 +1490,16 @@ async def publish_scheduled_posts(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    import os
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Store user_data/chat_data on disk so it survives bot restarts/redeploys.
+    # The pickle file lives next to the database (same directory).
+    _db_dir      = os.path.dirname(os.getenv("DATABASE_PATH", "questions.db")) or "."
+    _pickle_path = os.path.join(_db_dir, "bot_persistence.pickle")
+    persistence  = PicklePersistence(filepath=_pickle_path)
+
+    app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
 
     # Conversation handler: question submission
     ask_conv = ConversationHandler(

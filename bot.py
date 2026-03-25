@@ -1,4 +1,5 @@
 import html
+import json
 import logging
 
 from telegram import (
@@ -19,16 +20,30 @@ from telegram.ext import (
 
 from config import ADMIN_ID, BOT_TOKEN, CHANNEL_ID
 from database import (
+    ensure_user_profile,
+    follow_user,
+    get_admin_setting,
     get_comment_count,
     get_comments_page,
+    get_discoverable_users,
+    get_follower_count,
+    get_following_count,
+    get_pending_scheduled_posts,
     get_question,
     get_stats,
     get_user_aura,
+    get_user_profile,
     get_user_stats,
     init_db,
+    is_following,
+    mark_scheduled_post_published,
     save_comment,
     save_question,
+    save_scheduled_post,
+    set_admin_setting,
     set_channel_msg_id,
+    set_user_visibility,
+    unfollow_user,
     update_status,
     vote_comment,
 )
@@ -40,8 +55,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Conversation states ───────────────────────────────────────────────────────
-WAITING_QUESTION = 1
-WAITING_COMMENT  = 2
+WAITING_QUESTION   = 1
+WAITING_COMMENT    = 2
+SCHED_TEXT         = 10
+SCHED_TIME         = 11
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 COMMENTS_PER_PAGE = 3
@@ -60,7 +77,7 @@ TAGS = {
 POWERED_BY = '\n\n<b>Powered By <a href="https://t.me/ebuzznation">eBuzzNation</a></b>'
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [["✏️ Ask Question"], ["👤 Profile", "ℹ️ Help"]],
+    [["✏️ Ask Question"], ["👤 Profile", "🔍 Discover", "ℹ️ Help"]],
     resize_keyboard=True,
     is_persistent=True,
     input_field_placeholder="Choose an option…",
@@ -176,6 +193,9 @@ async def update_channel_button(context: ContextTypes.DEFAULT_TYPE, question_id:
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+
     args = context.args
 
     # Deep-link: /start c_<question_id>
@@ -187,6 +207,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if question_id:
             text, keyboard = build_comments_view(question_id, 1, context.bot.username)
             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            return
+
+    # Deep-link: /start u_<user_id>
+    if args and args[0].startswith("u_"):
+        try:
+            target_id = int(args[0][2:])
+        except ValueError:
+            target_id = None
+        if target_id:
+            await _show_user_card(update, context, target_id)
             return
 
     await update.message.reply_text(
@@ -215,22 +245,165 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── User card helper ──────────────────────────────────────────────────────────
+
+async def _show_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, target_id: int):
+    profile = get_user_profile(target_id)
+    if not profile or not profile["visible"]:
+        await update.message.reply_text("⚠️ This profile is private or doesn't exist.", reply_markup=MAIN_KEYBOARD)
+        return
+    stats     = get_user_stats(target_id)
+    followers = get_follower_count(target_id)
+    following = get_following_count(target_id)
+    name      = profile["full_name"] or "Unknown"
+    uname     = f"@{profile['username']}" if profile["username"] else ""
+    viewer_id = update.effective_user.id
+    already   = is_following(viewer_id, target_id)
+    btn_label = "➖ Unfollow" if already else "➕ Follow"
+    keyboard  = InlineKeyboardMarkup([[
+        InlineKeyboardButton(btn_label, callback_data=f"follow_{target_id}"),
+    ]]) if viewer_id != target_id else None
+    await update.message.reply_text(
+        f"👤 *{name}* {uname}\n"
+        f"──────────────────\n"
+        f"⚡ Aura:      *{stats['aura']}*\n"
+        f"❓ Questions: *{stats['questions']}*\n"
+        f"💬 Comments:  *{stats['comments']}*\n"
+        f"👥 Followers: *{followers}*  Following: *{following}*",
+        parse_mode="Markdown",
+        reply_markup=keyboard or MAIN_KEYBOARD,
+    )
+
+
 # ── Profile ───────────────────────────────────────────────────────────────────
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user  = update.effective_user
-    stats = get_user_stats(user.id)
-    name  = user.full_name or "Unknown"
+    user    = update.effective_user
+    ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+    stats     = get_user_stats(user.id)
+    profile   = get_user_profile(user.id)
+    followers = get_follower_count(user.id)
+    following = get_following_count(user.id)
+    name      = user.full_name or "Unknown"
+    visible   = profile["visible"] if profile else 0
+    vis_label = "🔓 Make Private" if visible else "🔒 Make Discoverable"
     await update.message.reply_text(
         f"👤 *{name}*\n"
         f"──────────────────\n"
         f"⚡ Aura:           *{stats['aura']}*\n"
         f"❓ Questions posted: *{stats['questions']}*\n"
-        f"💬 Comments made:   *{stats['comments']}*\n\n"
+        f"💬 Comments made:   *{stats['comments']}*\n"
+        f"👥 Followers: *{followers}*  Following: *{following}*\n\n"
         f"_Aura is earned when others upvote your comments._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(vis_label, callback_data="toggle_visibility"),
+        ]]),
+    )
+
+
+# ── Discover ──────────────────────────────────────────────────────────────────
+
+def _discover_keyboard(page: int, total: int, per_page: int = 5) -> InlineKeyboardMarkup:
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"disc_{page - 1}"))
+    nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"disc_{page + 1}"))
+    return InlineKeyboardMarkup([nav]) if nav else InlineKeyboardMarkup([])
+
+
+async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+    users, total = get_discoverable_users(user.id, page=1)
+    if not users:
+        await update.message.reply_text(
+            "🔍 No discoverable users yet.\n\nMake your profile public via 👤 *Profile* to appear here.",
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+    lines = ["🔍 *Discover Players*\n"]
+    bot_username = context.bot.username
+    for u in users:
+        name  = u["full_name"] or "Unknown"
+        uname = f" (@{u['username']})" if u["username"] else ""
+        link  = f"https://t.me/{bot_username}?start=u_{u['user_id']}"
+        lines.append(f"• [{name}{uname}]({link})")
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+        reply_markup=_discover_keyboard(1, total),
+    )
+
+
+# ── Admin: schedule post (conversation) ───────────────────────────────────────
+
+async def sched_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Admin only.")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "📅 *Schedule a Channel Post*\n\n"
+        "Send the post text (or a photo with caption).\n"
+        "Send /cancel to abort.",
+        parse_mode="Markdown",
+    )
+    return SCHED_TEXT
+
+
+async def sched_receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["sched_text"] = update.message.text.strip()
+    context.user_data["sched_photo"] = None
+    await update.message.reply_text(
+        "⏰ When should it be posted?\n\n"
+        "Send date/time in format: `YYYY-MM-DD HH:MM` (24h, UTC)\n"
+        "Example: `2026-04-01 18:00`",
+        parse_mode="Markdown",
+    )
+    return SCHED_TIME
+
+
+async def sched_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    caption = (update.message.caption or "").strip()
+    context.user_data["sched_text"] = caption
+    context.user_data["sched_photo"] = update.message.photo[-1].file_id
+    await update.message.reply_text(
+        "⏰ When should it be posted?\n\n"
+        "Send date/time in format: `YYYY-MM-DD HH:MM` (UTC)\n"
+        "Example: `2026-04-01 18:00`",
+        parse_mode="Markdown",
+    )
+    return SCHED_TIME
+
+
+async def sched_receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from datetime import datetime as dt
+    raw = update.message.text.strip()
+    try:
+        scheduled_at = dt.strptime(raw, "%Y-%m-%d %H:%M").isoformat()
+    except ValueError:
+        await update.message.reply_text("⚠️ Invalid format. Use `YYYY-MM-DD HH:MM`.", parse_mode="Markdown")
+        return SCHED_TIME
+    text      = context.user_data.get("sched_text", "")
+    photo     = context.user_data.get("sched_photo")
+    pid = save_scheduled_post(
+        text=text,
+        photo_file_id=photo,
+        buttons_json=json.dumps([]),
+        pin=False,
+        scheduled_at=scheduled_at,
+    )
+    await update.message.reply_text(
+        f"✅ *Post #{pid} scheduled for {raw} UTC.*",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
+    return ConversationHandler.END
 
 
 # ── Ask Question (conversation) ───────────────────────────────────────────────
@@ -606,6 +779,76 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Toggle profile visibility ──
+    if data == "toggle_visibility":
+        uid     = query.from_user.id
+        profile = get_user_profile(uid)
+        if not profile:
+            ensure_user_profile(uid, query.from_user.full_name or "Unknown", query.from_user.username or "")
+            profile = get_user_profile(uid)
+        new_vis = not bool(profile["visible"])
+        set_user_visibility(uid, new_vis)
+        label = "🔓 Make Private" if new_vis else "🔒 Make Discoverable"
+        status = "public — others can discover you 🔓" if new_vis else "private 🔒"
+        await query.answer(f"Profile is now {status}", show_alert=True)
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(label, callback_data="toggle_visibility"),
+                ]])
+            )
+        except Exception:
+            pass
+        return
+
+    # ── Follow / unfollow ──
+    if data.startswith("follow_"):
+        viewer_id = query.from_user.id
+        target_id = int(data.split("_", 1)[1])
+        if viewer_id == target_id:
+            await query.answer("That's you!", show_alert=True)
+            return
+        if is_following(viewer_id, target_id):
+            unfollow_user(viewer_id, target_id)
+            await query.answer("Unfollowed.")
+            new_label = "➕ Follow"
+        else:
+            follow_user(viewer_id, target_id)
+            await query.answer("Following!")
+            new_label = "➖ Unfollow"
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(new_label, callback_data=f"follow_{target_id}"),
+                ]])
+            )
+        except Exception:
+            pass
+        return
+
+    # ── Discover pagination ──
+    if data.startswith("disc_"):
+        await query.answer()
+        page = int(data.split("_", 1)[1])
+        users, total = get_discoverable_users(query.from_user.id, page=page)
+        bot_username = context.bot.username
+        lines = [f"🔍 *Discover Players* (page {page})\n"]
+        for u in users:
+            name  = u["full_name"] or "Unknown"
+            uname = f" (@{u['username']})" if u["username"] else ""
+            link  = f"https://t.me/{bot_username}?start=u_{u['user_id']}"
+            lines.append(f"• [{name}{uname}]({link})")
+        try:
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+                reply_markup=_discover_keyboard(page, total),
+            )
+        except Exception:
+            pass
+        return
+
     await query.answer()
 
 
@@ -641,6 +884,44 @@ async def unsupported_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def publish_scheduled_posts(context: ContextTypes.DEFAULT_TYPE):
+    """Job: publish any due scheduled posts to the channel."""
+    posts = get_pending_scheduled_posts()
+    for post in posts:
+        try:
+            buttons_data = json.loads(post.get("buttons_json") or "[]")
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(b["text"], url=b["url"]) for b in row]
+                for row in buttons_data
+            ]) if buttons_data else None
+
+            if post["photo_file_id"]:
+                msg = await context.bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=post["photo_file_id"],
+                    caption=post["text"] or "",
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+            else:
+                msg = await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=post["text"] or "",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=keyboard,
+                )
+            if post.get("pin"):
+                try:
+                    await context.bot.pin_chat_message(chat_id=CHANNEL_ID, message_id=msg.message_id)
+                except Exception:
+                    pass
+            mark_scheduled_post_published(post["id"])
+            logger.info("Published scheduled post #%s", post["id"])
+        except Exception as e:
+            logger.error("Failed to publish scheduled post #%s: %s", post["id"], e)
+
+
 def main():
     init_db()
 
@@ -674,22 +955,42 @@ def main():
         allow_reentry=True,
     )
 
+    # Conversation handler: schedule post (admin)
+    sched_conv = ConversationHandler(
+        entry_points=[CommandHandler("schedule", sched_start)],
+        states={
+            SCHED_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, sched_receive_text),
+                MessageHandler(filters.PHOTO, sched_receive_photo),
+            ],
+            SCHED_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, sched_receive_time)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+
     app.add_handler(ask_conv)
     app.add_handler(comment_conv)
-    app.add_handler(CommandHandler("start",   start))
-    app.add_handler(CommandHandler("help",    help_command))
-    app.add_handler(CommandHandler("profile", profile_command))
-    app.add_handler(CommandHandler("stats",   stats))
+    app.add_handler(sched_conv)
+    app.add_handler(CommandHandler("start",    start))
+    app.add_handler(CommandHandler("help",     help_command))
+    app.add_handler(CommandHandler("profile",  profile_command))
+    app.add_handler(CommandHandler("stats",    stats))
+    app.add_handler(CommandHandler("discover", discover_command))
 
     # Reply keyboard shortcuts
-    app.add_handler(MessageHandler(filters.Text(["👤 Profile"]),  profile_command))
-    app.add_handler(MessageHandler(filters.Text(["ℹ️ Help"]),     help_command))
+    app.add_handler(MessageHandler(filters.Text(["👤 Profile"]),   profile_command))
+    app.add_handler(MessageHandler(filters.Text(["🔍 Discover"]),  discover_command))
+    app.add_handler(MessageHandler(filters.Text(["ℹ️ Help"]),      help_command))
 
     # Unsupported media (photos are handled in the ask conversation above)
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL | filters.VOICE | filters.Sticker.ALL, unsupported_media))
 
-    # Inline callback (view, vote, admin approve/reject)
+    # Inline callback (view, vote, admin approve/reject, follow, discover)
     app.add_handler(CallbackQueryHandler(button_callback))
+
+    # Background job: check for scheduled posts every minute
+    app.job_queue.run_repeating(publish_scheduled_posts, interval=60, first=10)
 
     logger.info("eFootball bot is running…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

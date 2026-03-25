@@ -119,8 +119,8 @@ def review_keyboard(question_id: int) -> InlineKeyboardMarkup:
 
 
 async def _edit_admin_msg(query, text: str, parse_mode: str = None, reply_markup=None):
-    """Edit admin notification — handles both photo and text messages."""
-    if query.message.photo:
+    """Edit admin notification — handles text, photo, and voice messages."""
+    if query.message.photo or query.message.voice or query.message.audio or query.message.document:
         await query.edit_message_caption(caption=text, parse_mode=parse_mode, reply_markup=reply_markup)
     else:
         await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
@@ -775,24 +775,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Add comment ──
     if data.startswith("ac_"):
-        await query.answer()
         question_id = int(data.split("_", 1)[1])
         row = get_question(question_id)
         if not row or row["status"] != "approved":
-            await query.answer("⚠️ Question not found.", show_alert=True)
+            await query.answer("⚠️ Question not available.", show_alert=True)
             return
+        await query.answer()
         await _open_comment_prompt(query, context, question_id, "💬 *Adding comment to*")
         return
 
     # ── Reply to comment ──
     if data.startswith("rp_"):
-        await query.answer()
         _, cid, qid, page = data.split("_")
         question_id = int(qid)
         row = get_question(question_id)
         if not row or row["status"] != "approved":
-            await query.answer("⚠️ Question not found.", show_alert=True)
+            await query.answer("⚠️ Question not available.", show_alert=True)
             return
+        await query.answer()
         await _open_comment_prompt(query, context, question_id, "↩️ *Replying on*")
         return
 
@@ -881,7 +881,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{tag_hashtag}"
             f"{POWERED_BY}"
         )
-        btn = _channel_keyboard(question_id, 0, context.bot.username)
+        btn      = _channel_keyboard(question_id, 0, context.bot.username)
+        bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
 
         # Post to channel — photo, voice, or text
         if row["voice_file_id"]:

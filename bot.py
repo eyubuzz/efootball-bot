@@ -64,6 +64,8 @@ SCHED_TIME         = 11
 COMMENTS_PER_PAGE  = 3
 GATE_CHANNEL       = "@ebuzznation"
 GATE_CHANNEL_URL   = "https://t.me/ebuzznation"
+GATE_CHANNEL_2     = "@ebuzznationqa"
+GATE_CHANNEL_2_URL = "https://t.me/ebuzznationqa"
 
 # TAGS: key → (display_label, hashtag)
 TAGS = {
@@ -131,25 +133,32 @@ async def _delete_last(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
 
 async def _is_subscribed(bot, user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(chat_id=GATE_CHANNEL, user_id=user_id)
-        return member.status not in ("left", "kicked")
-    except Exception:
-        return False
+    for channel in (GATE_CHANNEL, GATE_CHANNEL_2):
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status in ("left", "kicked"):
+                return False
+        except Exception:
+            return False
+    return True
 
 
 async def _send_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send the subscription gate message and store its id."""
     await _delete_last(context, update.effective_chat.id)
     sent = await update.message.reply_text(
-        "👋 To use this bot you must join our channel first.\n\n"
+        "👋 To use this bot you must join *both* channels first.\n\n"
         "1️⃣ Join 👉 *eBuzzNation*\n"
-        "2️⃣ Tap ✅ *Verify* below",
+        "2️⃣ Join 👉 *eBuzzNation QA*\n"
+        "3️⃣ Tap ✅ *Verify* below",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("📢 Join Channel", url=GATE_CHANNEL_URL),
-            InlineKeyboardButton("✅ Verify",        callback_data="verify"),
-        ]]),
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📢 eBuzzNation",    url=GATE_CHANNEL_URL),
+                InlineKeyboardButton("📢 eBuzzNation QA", url=GATE_CHANNEL_2_URL),
+            ],
+            [InlineKeyboardButton("✅ Verify", callback_data="verify")],
+        ]),
     )
     context.user_data["_gate_msg"] = sent.message_id
 

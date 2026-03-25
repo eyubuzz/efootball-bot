@@ -177,6 +177,22 @@ def set_channel_msg_id(question_id: int, msg_id: int):
     conn.close()
 
 
+def get_all_questions_export() -> list:
+    """Return all questions with comment counts for PDF export."""
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT q.id, q.post_number, q.full_name, q.username, q.question,
+               q.status, q.tag, q.created_at,
+               (SELECT COUNT(*) FROM comments WHERE question_id=q.id) AS comment_count
+        FROM questions q
+        ORDER BY q.id ASC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_stats() -> dict:
     conn = _conn()
     c = conn.cursor()

@@ -1,4 +1,5 @@
 import html
+import io
 import json
 import logging
 
@@ -38,6 +39,7 @@ from database import (
     is_following,
     mark_scheduled_post_published,
     assign_post_number,
+    get_all_questions_export,
     next_post_number,
     reset_questions,
     save_comment,
@@ -1007,6 +1009,77 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Admin: PDF export ─────────────────────────────────────────────────────────
+
+async def pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Admin only.")
+        return
+
+    from fpdf import FPDF
+
+    questions = get_all_questions_export()
+    if not questions:
+        await update.message.reply_text("No questions in the database yet.")
+        return
+
+    status_counts = {}
+    for q in questions:
+        status_counts[q["status"]] = status_counts.get(q["status"], 0) + 1
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # Title
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, "eFootball Q&A Bot — Questions Export", ln=True, align="C")
+    pdf.set_font("Helvetica", "", 10)
+    from datetime import datetime as dt
+    pdf.cell(0, 6, f"Generated: {dt.utcnow().strftime('%Y-%m-%d %H:%M UTC')}  |  "
+             f"Total: {len(questions)}  |  "
+             f"Approved: {status_counts.get('approved', 0)}  |  "
+             f"Pending: {status_counts.get('pending', 0)}  |  "
+             f"Rejected: {status_counts.get('rejected', 0)}",
+             ln=True, align="C")
+    pdf.ln(4)
+
+    STATUS_ICON = {"approved": "✓", "pending": "…", "rejected": "✗"}
+
+    for q in questions:
+        channel_num = f"  [Channel #{q['post_number']}]" if q["post_number"] else ""
+        icon        = STATUS_ICON.get(q["status"], "?")
+        tag         = TAGS.get(q["tag"] or "", ("",))[0] if q["tag"] else ""
+
+        # Question header bar
+        pdf.set_fill_color(230, 230, 230)
+        pdf.set_font("Helvetica", "B", 11)
+        header = f"[{icon}] DB#{q['id']}{channel_num}  —  {q['status'].upper()}"
+        if tag:
+            header += f"  |  {tag}"
+        pdf.cell(0, 8, header, ln=True, fill=True)
+
+        # Submitter + date
+        pdf.set_font("Helvetica", "I", 9)
+        uname = f" (@{q['username']})" if q["username"] else ""
+        date  = (q["created_at"] or "")[:16].replace("T", " ")
+        pdf.cell(0, 5, f"From: {q['full_name']}{uname}   Date: {date}   Comments: {q['comment_count']}", ln=True)
+
+        # Question text
+        pdf.set_font("Helvetica", "", 10)
+        safe = q["question"].encode("latin-1", errors="replace").decode("latin-1")
+        pdf.multi_cell(0, 6, safe)
+        pdf.ln(3)
+
+    buf = io.BytesIO(pdf.output())
+    buf.name = "questions_export.pdf"
+    await update.message.reply_document(
+        document=buf,
+        filename="questions_export.pdf",
+        caption=f"📄 Questions export — {len(questions)} total",
+    )
+
+
 # ── Admin: reset DB ───────────────────────────────────────────────────────────
 
 async def resetdb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1128,6 +1201,7 @@ def main():
     app.add_handler(CommandHandler("help",     help_command))
     app.add_handler(CommandHandler("profile",  profile_command))
     app.add_handler(CommandHandler("stats",    stats))
+    app.add_handler(CommandHandler("pdf",      pdf_command))
     app.add_handler(CommandHandler("resetdb",  resetdb_command))
     app.add_handler(CommandHandler("discover", discover_command))
 

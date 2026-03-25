@@ -507,6 +507,126 @@ def mark_scheduled_post_published(post_id: int):
     conn.close()
 
 
+# ── Daily limit / spam / duplicate ────────────────────────────────────────────
+
+def get_user_question_count_today(user_id: int) -> int:
+    """Count questions submitted by this user today (UTC date)."""
+    from datetime import date
+    today = date.today().isoformat()
+    conn = _conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM questions WHERE user_id=? AND created_at>=?",
+        (user_id, today),
+    )
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+def has_submitted_exact(user_id: int, text: str) -> bool:
+    """True if this user already submitted the exact same question text."""
+    conn = _conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT 1 FROM questions WHERE user_id=? AND LOWER(question)=LOWER(?) LIMIT 1",
+        (user_id, text),
+    )
+    found = c.fetchone() is not None
+    conn.close()
+    return found
+
+
+def find_duplicate_question(text: str):
+    """Return an existing approved question that is very similar, or None."""
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("SELECT id, question, post_number FROM questions WHERE status='approved'")
+    rows = c.fetchall()
+    conn.close()
+
+    words_new = {w.lower() for w in text.split() if len(w) > 3}
+    if not words_new:
+        return None
+
+    best_score, best_row = 0.0, None
+    for row in rows:
+        words_ex = {w.lower() for w in row["question"].split() if len(w) > 3}
+        if not words_ex:
+            continue
+        common = words_new & words_ex
+        score  = len(common) / len(words_new)
+        if len(common) >= 3 and score > best_score:
+            best_score, best_row = score, row
+
+    return dict(best_row) if best_score >= 0.5 else None
+
+
+# ── User question history ──────────────────────────────────────────────────────
+
+def get_user_questions(user_id: int) -> list:
+    """Return all questions submitted by the user (newest first)."""
+    conn = _conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, question, status, post_number, created_at FROM questions "
+        "WHERE user_id=? ORDER BY created_at DESC",
+        (user_id,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Search ────────────────────────────────────────────────────────────────────
+
+def search_questions(keyword: str) -> list:
+    """Full-text search across approved questions (up to 10 results)."""
+    conn = _conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, question, post_number, tag FROM questions "
+        "WHERE status='approved' AND LOWER(question) LIKE LOWER(?) ORDER BY id DESC LIMIT 10",
+        (f"%{keyword}%",),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Broadcast helpers ─────────────────────────────────────────────────────────
+
+def get_all_user_ids() -> list:
+    """Return all user IDs who have ever started the bot."""
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM user_profiles ORDER BY created_at ASC")
+    rows = c.fetchall()
+    conn.close()
+    return [row["user_id"] for row in rows]
+
+
+# ── Weekly digest ─────────────────────────────────────────────────────────────
+
+def get_top_questions_week(limit: int = 5) -> list:
+    """Top questions approved in the last 7 days, ranked by comment count."""
+    from datetime import datetime, timedelta
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT q.id, q.question, q.post_number, q.tag,
+               (SELECT COUNT(*) FROM comments WHERE question_id=q.id) AS comment_count
+        FROM questions q
+        WHERE q.status='approved' AND q.answered_at >= ?
+        ORDER BY comment_count DESC
+        LIMIT ?
+    """, (week_ago, limit))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # ── Legacy compat ─────────────────────────────────────────────────────────────
 
 def get_comments(question_id: int) -> list:

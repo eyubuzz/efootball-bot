@@ -1,3 +1,4 @@
+import asyncio
 import html
 import io
 import json
@@ -22,8 +23,10 @@ from telegram.ext import (
 from config import ADMIN_ID, BOT_TOKEN, CHANNEL_ID
 from database import (
     ensure_user_profile,
+    find_duplicate_question,
     follow_user,
     get_admin_setting,
+    get_all_user_ids,
     get_comment_count,
     get_comments_page,
     get_discoverable_users,
@@ -32,9 +35,13 @@ from database import (
     get_pending_scheduled_posts,
     get_question,
     get_stats,
+    get_top_questions_week,
     get_user_aura,
     get_user_profile,
+    get_user_questions,
+    get_user_question_count_today,
     get_user_stats,
+    has_submitted_exact,
     init_db,
     is_following,
     mark_scheduled_post_published,
@@ -45,6 +52,7 @@ from database import (
     save_comment,
     save_question,
     save_scheduled_post,
+    search_questions,
     set_admin_setting,
     set_channel_msg_id,
     set_user_visibility,
@@ -88,8 +96,27 @@ TAGS = {
 
 POWERED_BY = '\n\n<b>Powered By <a href="https://t.me/ebuzznation">eBuzzNation</a></b>'
 
+DAILY_LIMIT = 3  # max questions per user per day
+
+# ── Amharic / multilingual ─────────────────────────────────────────────────────
+def _is_amharic(text: str) -> bool:
+    """True if text contains Ethiopic script characters."""
+    return any('\u1200' <= c <= '\u137f' for c in (text or ''))
+
+
+def _set_lang(context: ContextTypes.DEFAULT_TYPE, text: str):
+    if _is_amharic(text):
+        context.user_data["_lang"] = "am"
+    elif any(c.isascii() and c.isalpha() for c in (text or '')):
+        context.user_data["_lang"] = "en"
+
+
+def _t(context: ContextTypes.DEFAULT_TYPE, en: str, am: str) -> str:
+    return am if context.user_data.get("_lang") == "am" else en
+
+
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [["✏️ Ask Question"], ["👤 Profile", "🔍 Discover", "ℹ️ Help"]],
+    [["✏️ Ask Question"], ["📋 My Status", "🔍 Discover"], ["👤 Profile", "ℹ️ Help"]],
     resize_keyboard=True,
     is_persistent=True,
     input_field_placeholder="Choose an option…",
@@ -572,6 +599,57 @@ async def _submit_question(update, context, text: str,
                            photo_file_id: str = None, voice_file_id: str = None):
     """Save question, confirm to user, and notify admin."""
     user = update.effective_user
+
+    # ── Detect language ──
+    if text and text != "🎤 Voice question":
+        _set_lang(context, text)
+
+    # ── Daily limit ──
+    count_today = get_user_question_count_today(user.id)
+    if count_today >= DAILY_LIMIT:
+        await update.message.reply_text(
+            _t(context,
+               f"⚠️ *Daily limit reached!*\n\nYou can submit up to {DAILY_LIMIT} questions per day. Come back tomorrow!",
+               f"⚠️ *ዛሬ ወሰን ደርሰዋል!*\n\nዛሬ ቢበዛ {DAILY_LIMIT} ጥያቄ ማቅረብ ይቻላል። ነገ ይሞክሩ!"),
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return ConversationHandler.END
+
+    # ── Spam: exact duplicate from same user ──
+    if text and text != "🎤 Voice question" and has_submitted_exact(user.id, text):
+        await update.message.reply_text(
+            _t(context,
+               "⚠️ You already submitted this exact question. Please check your /mystatus.",
+               "⚠️ ይህ ጥያቄ አስቀድሞ ቀርቧል። /mystatus ይፈትሹ።"),
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return ConversationHandler.END
+
+    # ── Duplicate detection: similar approved question ──
+    if text and text != "🎤 Voice question":
+        similar = find_duplicate_question(text)
+        if similar:
+            num    = similar["post_number"] or similar["id"]
+            q_text = similar["question"][:120]
+            link   = f"https://t.me/{context.bot.username}?start=c_{similar['id']}"
+            await update.message.reply_text(
+                _t(context,
+                   f"⚠️ *A very similar question already exists!*\n\n"
+                   f"❓ _{q_text}_\n\n"
+                   f"[View its comments]({link})\n\n"
+                   f"If your question is different, rephrase and try again.",
+                   f"⚠️ *ተመሳሳይ ጥያቄ አስቀድሞ አለ!*\n\n"
+                   f"❓ _{q_text}_\n\n"
+                   f"[አስተያየቶች ይመልከቱ]({link})\n\n"
+                   f"ጥያቄዎ የተለየ ከሆነ፣ ቃላቱን ቀይረው እንደገና ይሞክሩ።"),
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return ConversationHandler.END
+
     qid = save_question(
         user_id=user.id,
         username=user.username or "",
@@ -586,9 +664,9 @@ async def _submit_question(update, context, text: str,
         await _try_delete(context, update.effective_chat.id, prompt_id)
 
     conf = await update.message.reply_text(
-        f"✅ *Question submitted!*\n\n"
-        f"🆔 ID: `#{qid}`\n"
-        f"⏳ Pending admin review — you'll be notified once it's posted.",
+        _t(context,
+           f"✅ *Question submitted!*\n\n🆔 ID: `#{qid}`\n⏳ Pending admin review — you'll be notified once it's posted.",
+           f"✅ *ጥያቄ ቀርቧል!*\n\n🆔 ID: `#{qid}`\n⏳ የአስተዳዳሪ ግምገማ ይጠብቃሉ — ሲለጠፍ ይነገርዎታል።"),
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -902,7 +980,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         q_text = html.escape(row['question'])
         channel_caption = (
-            f"❓ <b>eFootball Question #{post_num}</b>\n\n"
+            f"❓ <b>eFootball Question</b>\n\n"
             f"{q_text}\n\n"
             f"{tag_hashtag}"
             f"{POWERED_BY}"
@@ -1183,6 +1261,180 @@ async def resetdb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Database reset. Post counter is back to zero.")
 
 
+# ── /mystatus ─────────────────────────────────────────────────────────────────
+
+async def mystatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not await _is_subscribed(context.bot, user.id):
+        await _send_gate(update, context)
+        return
+    questions = get_user_questions(user.id)
+    await _delete_last(context, update.effective_chat.id)
+    if not questions:
+        sent = await update.message.reply_text(
+            "📋 You haven't submitted any questions yet.\n\nTap *✏️ Ask Question* to get started!",
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        context.user_data["_last_msg"] = sent.message_id
+        return
+
+    STATUS_ICON = {"approved": "✅", "pending": "⏳", "rejected": "❌"}
+    lines = ["📋 *Your Questions*\n"]
+    for q in questions:
+        icon    = STATUS_ICON.get(q["status"], "❓")
+        date    = (q["created_at"] or "")[:10]
+        text    = (q["question"] or "")[:60]
+        if len(q["question"] or "") > 60:
+            text += "…"
+        if q["status"] == "approved" and q["post_number"]:
+            lines.append(f"{icon} *#{q['post_number']}* — {text}\n    _{date}_")
+        else:
+            lines.append(f"{icon} {text}\n    _{date} · {q['status']}_")
+
+    sent = await update.message.reply_text(
+        "\n\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
+    )
+    context.user_data["_last_msg"] = sent.message_id
+
+
+# ── /search ───────────────────────────────────────────────────────────────────
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not await _is_subscribed(context.bot, user.id):
+        await _send_gate(update, context)
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "🔍 *Usage:* `/search <keyword>`\n\nExample: `/search formation`",
+            parse_mode="Markdown",
+        )
+        return
+    keyword = " ".join(context.args).strip()
+    if len(keyword) < 2:
+        await update.message.reply_text("⚠️ Please enter at least 2 characters.")
+        return
+
+    results = search_questions(keyword)
+    await _delete_last(context, update.effective_chat.id)
+    if not results:
+        sent = await update.message.reply_text(
+            f"🔍 No results found for *{keyword}*.\n\nTry a different keyword.",
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        context.user_data["_last_msg"] = sent.message_id
+        return
+
+    bot_username = context.bot.username
+    lines = [f"🔍 *Search results for:* `{keyword}`\n"]
+    for r in results:
+        text = (r["question"] or "")[:80]
+        if len(r["question"] or "") > 80:
+            text += "…"
+        link = f"https://t.me/{bot_username}?start=c_{r['id']}"
+        lines.append(f"• [{text}]({link})")
+    lines.append(f"\n_{len(results)} result{'s' if len(results) != 1 else ''} found_")
+
+    sent = await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+        reply_markup=MAIN_KEYBOARD,
+    )
+    context.user_data["_last_msg"] = sent.message_id
+
+
+# ── Weekly digest job ─────────────────────────────────────────────────────────
+
+async def weekly_digest(context: ContextTypes.DEFAULT_TYPE):
+    """Post top 5 Q&As of the week to the channel every Sunday at 9am UTC."""
+    questions = get_top_questions_week(limit=5)
+    if not questions:
+        logger.info("Weekly digest: no questions this week, skipping.")
+        return
+
+    bot_username = context.bot.username
+    lines = ["🏆 <b>Top eFootball Questions This Week</b>\n"]
+    for i, q in enumerate(questions, 1):
+        text     = html.escape((q["question"] or "")[:100])
+        comments = q["comment_count"]
+        link     = f"https://t.me/{bot_username}?start=c_{q['id']}"
+        tag_info = TAGS.get(q["tag"] or "", ("", ""))
+        tag_label = tag_info[0]
+        lines.append(
+            f"{i}. <b>eFootball Question</b>\n"
+            f"   {text}\n"
+            f"   {'🏷️ ' + tag_label if tag_label else ''}  💬 {comments} comment{'s' if comments != 1 else ''}\n"
+            f"   <a href=\"{link}\">View &amp; Comment</a>"
+        )
+
+    caption = "\n\n".join(lines) + POWERED_BY
+    try:
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=caption,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        logger.info("Weekly digest posted.")
+    except Exception as e:
+        logger.error("Weekly digest failed: %s", e)
+
+
+# ── Admin: broadcast v2.0 ─────────────────────────────────────────────────────
+
+async def broadcast_v2_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Admin only.")
+        return
+
+    user_ids = get_all_user_ids()
+    if not user_ids:
+        await update.message.reply_text("No users found.")
+        return
+
+    status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users…")
+
+    message = (
+        "🎉 *eFootball Q&A Bot v2.0 is here!*\n\n"
+        "Here's what's new:\n\n"
+        "🔍 `/search` — Search any Q&A by keyword\n"
+        "📋 `/mystatus` — See all your submitted questions\n"
+        "🎤 Voice questions & comments\n"
+        "📷 Photo questions & comments\n"
+        "💬 Separate View & Add Comment buttons\n"
+        "⚡ Aura points for helpful comments\n"
+        "👥 Discover other players\n"
+        "📅 Weekly top Q&A digest every Sunday\n"
+        "🌍 Amharic language support\n\n"
+        "Use the menu below to get started! 👇"
+    )
+
+    sent_count, fail_count = 0, 0
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=message,
+                parse_mode="Markdown",
+            )
+            sent_count += 1
+        except Exception:
+            fail_count += 1
+        await asyncio.sleep(0.05)  # ~20 msg/sec, well within Telegram limits
+
+    await status_msg.edit_text(
+        f"✅ *Broadcast complete!*\n\n"
+        f"📤 Sent: {sent_count}\n"
+        f"❌ Failed: {fail_count}",
+        parse_mode="Markdown",
+    )
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def unsupported_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1273,18 +1525,22 @@ def main():
     app.add_handler(MessageHandler(_comment_filter, comment_receive), group=0)
     app.add_handler(ask_conv,   group=1)
     app.add_handler(sched_conv, group=1)
-    app.add_handler(CommandHandler("start",    start))
-    app.add_handler(CommandHandler("help",     help_command))
-    app.add_handler(CommandHandler("profile",  profile_command))
-    app.add_handler(CommandHandler("stats",    stats))
-    app.add_handler(CommandHandler("pdf",      pdf_command))
-    app.add_handler(CommandHandler("resetdb",  resetdb_command))
-    app.add_handler(CommandHandler("discover", discover_command))
+    app.add_handler(CommandHandler("start",        start))
+    app.add_handler(CommandHandler("help",         help_command))
+    app.add_handler(CommandHandler("profile",      profile_command))
+    app.add_handler(CommandHandler("stats",        stats))
+    app.add_handler(CommandHandler("pdf",          pdf_command))
+    app.add_handler(CommandHandler("resetdb",      resetdb_command))
+    app.add_handler(CommandHandler("discover",     discover_command))
+    app.add_handler(CommandHandler("mystatus",     mystatus_command))
+    app.add_handler(CommandHandler("search",       search_command))
+    app.add_handler(CommandHandler("broadcast_v2", broadcast_v2_command))
 
     # Reply keyboard shortcuts
     app.add_handler(MessageHandler(filters.Text(["👤 Profile"]),   profile_command))
     app.add_handler(MessageHandler(filters.Text(["🔍 Discover"]),  discover_command))
     app.add_handler(MessageHandler(filters.Text(["ℹ️ Help"]),      help_command))
+    app.add_handler(MessageHandler(filters.Text(["📋 My Status"]), mystatus_command))
 
     # Unsupported media (photos are handled in the ask conversation above)
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL | filters.VOICE | filters.Sticker.ALL, unsupported_media))
@@ -1294,6 +1550,14 @@ def main():
 
     # Background job: check for scheduled posts every minute
     app.job_queue.run_repeating(publish_scheduled_posts, interval=60, first=10)
+
+    # Weekly digest: every Sunday at 09:00 UTC
+    import datetime as _dt
+    app.job_queue.run_daily(
+        weekly_digest,
+        time=_dt.time(9, 0, tzinfo=_dt.timezone.utc),
+        days=(0,),  # 0 = Sunday in PTB/APScheduler
+    )
 
     logger.info("eFootball bot is running…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

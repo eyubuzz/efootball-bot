@@ -61,7 +61,9 @@ SCHED_TEXT         = 10
 SCHED_TIME         = 11
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-COMMENTS_PER_PAGE = 3
+COMMENTS_PER_PAGE  = 3
+GATE_CHANNEL       = "@ebuzznation"
+GATE_CHANNEL_URL   = "https://t.me/ebuzznation"
 
 # TAGS: key → (display_label, hashtag)
 TAGS = {
@@ -126,6 +128,30 @@ async def _delete_last(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     msg_id = context.user_data.pop("_last_msg", None)
     if msg_id:
         await _try_delete(context, chat_id, msg_id)
+
+
+async def _is_subscribed(bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=GATE_CHANNEL, user_id=user_id)
+        return member.status not in ("left", "kicked")
+    except Exception:
+        return False
+
+
+async def _send_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the subscription gate message and store its id."""
+    await _delete_last(context, update.effective_chat.id)
+    sent = await update.message.reply_text(
+        "👋 To use this bot you must join our channel first.\n\n"
+        "1️⃣ Join 👉 *eBuzzNation*\n"
+        "2️⃣ Tap ✅ *Verify* below",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📢 Join Channel", url=GATE_CHANNEL_URL),
+            InlineKeyboardButton("✅ Verify",        callback_data="verify"),
+        ]]),
+    )
+    context.user_data["_gate_msg"] = sent.message_id
 
 
 def build_comments_view(question_id: int, page: int, bot_username: str):
@@ -208,6 +234,9 @@ async def update_channel_button(context: ContextTypes.DEFAULT_TYPE, question_id:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if not await _is_subscribed(context.bot, user.id):
+        await _send_gate(update, context)
+        return
     ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
 
     args = context.args
@@ -247,6 +276,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Help ──────────────────────────────────────────────────────────────────────
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _is_subscribed(context.bot, update.effective_user.id):
+        await _send_gate(update, context)
+        return
     await _delete_last(context, update.effective_chat.id)
     sent = await update.message.reply_text(
         "📖 *How to use this bot:*\n\n"
@@ -297,6 +329,9 @@ async def _show_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, ta
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user    = update.effective_user
+    if not await _is_subscribed(context.bot, user.id):
+        await _send_gate(update, context)
+        return
     ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
     stats     = get_user_stats(user.id)
     profile   = get_user_profile(user.id)
@@ -337,6 +372,9 @@ def _discover_keyboard(page: int, total: int, per_page: int = 5) -> InlineKeyboa
 
 async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if not await _is_subscribed(context.bot, user.id):
+        await _send_gate(update, context)
+        return
     ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
     users, total = get_discoverable_users(user.id, page=1)
     await _delete_last(context, update.effective_chat.id)
@@ -447,6 +485,9 @@ async def sched_receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if not await _is_subscribed(context.bot, user.id):
+        await _send_gate(update, context)
+        return WAITING_QUESTION
     ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
     await _delete_last(context, update.effective_chat.id)
     sent = await update.message.reply_text(
@@ -667,6 +708,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # No-op button (page indicator)
     if data == "noop":
         await query.answer()
+        return
+
+    # ── Subscription gate: verify ──
+    if data == "verify":
+        if not await _is_subscribed(context.bot, query.from_user.id):
+            await query.answer("❌ You haven't joined yet. Please join first!", show_alert=True)
+            return
+        # Delete the gate message
+        gate_id = context.user_data.pop("_gate_msg", None)
+        if gate_id:
+            await _try_delete(context, query.message.chat_id, gate_id)
+        await query.answer("✅ Verified!")
+        # Show welcome
+        ensure_user_profile(query.from_user.id, query.from_user.full_name or "Unknown", query.from_user.username or "")
+        sent = await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✅ *Verified! Welcome to the eFootball Q&A Bot.*\n\nUse the menu below 👇",
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        context.user_data["_last_msg"] = sent.message_id
         return
 
     # ── View / navigate comments ──

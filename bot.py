@@ -61,7 +61,6 @@ logger = logging.getLogger(__name__)
 
 # ── Conversation states ───────────────────────────────────────────────────────
 WAITING_QUESTION   = 1
-WAITING_COMMENT    = 2
 SCHED_TEXT         = 10
 SCHED_TIME         = 11
 
@@ -595,67 +594,41 @@ async def ask_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _submit_question(update, context, caption, photo_file_id)
 
 
-# ── Add Comment (conversation) ────────────────────────────────────────────────
+# ── Add Comment (user_data flag approach — avoids ConversationHandler/callback issues) ──
 
-async def comment_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    question_id = int(query.data.split("_", 1)[1])
-    row = get_question(question_id)
-    if not row or row["status"] != "approved":
-        await query.answer("⚠️ Question not found or not approved.", show_alert=True)
-        return ConversationHandler.END
-
-    context.user_data["comment_qid"] = question_id
+async def _open_comment_prompt(query, context: ContextTypes.DEFAULT_TYPE, question_id: int, label: str):
+    """Set the awaiting-comment flag and send the prompt."""
+    context.user_data["_awaiting_comment_qid"] = question_id
     sent = await query.message.reply_text(
-        f"💬 *Adding comment to Question #{question_id}*\n\n"
+        f"{label} *Question #{question_id}*\n\n"
         f"Type your comment below (3–500 characters).\n"
         f"Send /cancel to go back.",
         parse_mode="Markdown",
     )
     context.user_data["_conv_prompt"] = sent.message_id
-    return WAITING_COMMENT
-
-
-async def reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reply to a specific comment — treated as a regular comment for simplicity."""
-    query = update.callback_query
-    await query.answer()
-
-    _, cid, qid, page = query.data.split("_")
-    question_id = int(qid)
-    row = get_question(question_id)
-    if not row or row["status"] != "approved":
-        await query.answer("⚠️ Question not found.", show_alert=True)
-        return ConversationHandler.END
-
-    context.user_data["comment_qid"] = question_id
-    sent = await query.message.reply_text(
-        f"↩️ *Replying to a comment on Question #{question_id}*\n\n"
-        f"Type your reply below (3–500 characters).\n"
-        f"Send /cancel to go back.",
-        parse_mode="Markdown",
-    )
-    context.user_data["_conv_prompt"] = sent.message_id
-    return WAITING_COMMENT
 
 
 async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text        = update.message.text.strip()
-    question_id = context.user_data.get("comment_qid")
-
+    """Handle an incoming comment text when the user is in awaiting-comment state."""
+    question_id = context.user_data.get("_awaiting_comment_qid")
     if not question_id:
-        await update.message.reply_text("⚠️ Something went wrong. Please try again.", reply_markup=MAIN_KEYBOARD)
-        return ConversationHandler.END
+        return  # not waiting for a comment — let other handlers deal with it
+
+    text = update.message.text.strip()
 
     if len(text) < 3:
         await update.message.reply_text("⚠️ Too short. Try again.")
-        return WAITING_COMMENT
+        return
 
     if len(text) > 500:
         await update.message.reply_text("⚠️ Too long (max 500 chars). Please shorten.")
-        return WAITING_COMMENT
+        return
+
+    # Clear state first
+    context.user_data.pop("_awaiting_comment_qid", None)
+    prompt_id = context.user_data.pop("_conv_prompt", None)
+    if prompt_id:
+        await _try_delete(context, update.effective_chat.id, prompt_id)
 
     user = update.effective_user
     save_comment(
@@ -666,10 +639,8 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         comment=text,
     )
 
-    # Update the channel post button count
     await update_channel_button(context, question_id)
 
-    # Notify question author
     row = get_question(question_id)
     if row and row["user_id"] != user.id:
         try:
@@ -685,11 +656,7 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    prompt_id = context.user_data.pop("_conv_prompt", None)
-    if prompt_id:
-        await _try_delete(context, update.effective_chat.id, prompt_id)
-
-    count = get_comment_count(question_id)
+    count    = get_comment_count(question_id)
     bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
     conf = await update.message.reply_text(
         f"✅ *Comment posted!*\n\n"
@@ -699,7 +666,6 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=True,
     )
     context.user_data["_last_msg"] = conf.message_id
-    return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -743,6 +709,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=MAIN_KEYBOARD,
         )
         context.user_data["_last_msg"] = sent.message_id
+        return
+
+    # ── Add comment ──
+    if data.startswith("ac_"):
+        await query.answer()
+        question_id = int(data.split("_", 1)[1])
+        row = get_question(question_id)
+        if not row or row["status"] != "approved":
+            await query.answer("⚠️ Question not found.", show_alert=True)
+            return
+        await _open_comment_prompt(query, context, question_id, "💬 *Adding comment to*")
+        return
+
+    # ── Reply to comment ──
+    if data.startswith("rp_"):
+        await query.answer()
+        _, cid, qid, page = data.split("_")
+        question_id = int(qid)
+        row = get_question(question_id)
+        if not row or row["status"] != "approved":
+            await query.answer("⚠️ Question not found.", show_alert=True)
+            return
+        await _open_comment_prompt(query, context, question_id, "↩️ *Replying on*")
         return
 
     # ── View / navigate comments ──
@@ -1167,19 +1156,6 @@ def main():
         allow_reentry=True,
     )
 
-    # Conversation handler: comment / reply submission
-    comment_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(comment_start, pattern=r"^ac_\d+$"),
-            CallbackQueryHandler(reply_start,   pattern=r"^rp_\d+_\d+_\d+$"),
-        ],
-        states={
-            WAITING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, comment_receive)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True,
-    )
-
     # Conversation handler: schedule post (admin)
     sched_conv = ConversationHandler(
         entry_points=[CommandHandler("schedule", sched_start)],
@@ -1194,9 +1170,11 @@ def main():
         allow_reentry=True,
     )
 
-    app.add_handler(ask_conv)
-    app.add_handler(comment_conv)
-    app.add_handler(sched_conv)
+    # Group 0: comment_receive runs first; if no pending comment it exits immediately.
+    # Groups are all passed the update, so ask_conv in group 1 still sees text messages.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, comment_receive), group=0)
+    app.add_handler(ask_conv,   group=1)
+    app.add_handler(sched_conv, group=1)
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(CommandHandler("help",     help_command))
     app.add_handler(CommandHandler("profile",  profile_command))

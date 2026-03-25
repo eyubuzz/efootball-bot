@@ -37,6 +37,9 @@ from database import (
     init_db,
     is_following,
     mark_scheduled_post_published,
+    assign_post_number,
+    next_post_number,
+    reset_questions,
     save_comment,
     save_question,
     save_scheduled_post,
@@ -814,11 +817,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         tag_label, tag_hashtag = TAGS.get(tag_key, ("🔧 General", "#General"))
+        post_num = next_post_number()
         update_status(question_id, "approved", tag_key)
+        assign_post_number(question_id, post_num)
 
         q_text = html.escape(row['question'])
         channel_caption = (
-            f"❓ <b>eFootball Question #{question_id}</b>\n\n"
+            f"❓ <b>eFootball Question #{post_num}</b>\n\n"
             f"{q_text}\n\n"
             f"{tag_hashtag}"
             f"{POWERED_BY}"
@@ -863,7 +868,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await _edit_admin_msg(
             query,
-            f"✅ *Approved & Posted — #{question_id}*\n\n"
+            f"✅ *Approved & Posted — Channel #{post_num}*\n\n"
             f"🏷️ {tag_label}\n"
             f"👤 {row['full_name']}\n"
             f"❓ {row['question']}\n\n"
@@ -1002,6 +1007,24 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Admin: reset DB ───────────────────────────────────────────────────────────
+
+async def resetdb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    # Require confirmation argument: /resetdb confirm
+    if not context.args or context.args[0] != "confirm":
+        await update.message.reply_text(
+            "⚠️ This will delete *all* questions, comments, and votes.\n\n"
+            "To confirm, send: `/resetdb confirm`",
+            parse_mode="Markdown",
+        )
+        return
+    reset_questions()
+    await update.message.reply_text("✅ Database reset. Post counter is back to zero.")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def unsupported_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1105,6 +1128,7 @@ def main():
     app.add_handler(CommandHandler("help",     help_command))
     app.add_handler(CommandHandler("profile",  profile_command))
     app.add_handler(CommandHandler("stats",    stats))
+    app.add_handler(CommandHandler("resetdb",  resetdb_command))
     app.add_handler(CommandHandler("discover", discover_command))
 
     # Reply keyboard shortcuts

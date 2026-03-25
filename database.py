@@ -95,6 +95,7 @@ def init_db():
     for migration in [
         "ALTER TABLE questions ADD COLUMN channel_msg_id INTEGER",
         "ALTER TABLE questions ADD COLUMN photo_file_id  TEXT",
+        "ALTER TABLE questions ADD COLUMN post_number    INTEGER",
     ]:
         try:
             c.execute(migration)
@@ -127,6 +128,34 @@ def get_question(question_id: int):
     row = c.fetchone()
     conn.close()
     return row
+
+
+def next_post_number() -> int:
+    """Return the next sequential channel post number (max approved post_number + 1)."""
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("SELECT COALESCE(MAX(post_number), 0) FROM questions WHERE status='approved'")
+    n = c.fetchone()[0] + 1
+    conn.close()
+    return n
+
+
+def assign_post_number(question_id: int, number: int):
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("UPDATE questions SET post_number=? WHERE id=?", (number, question_id))
+    conn.commit()
+    conn.close()
+
+
+def reset_questions():
+    """Wipe all questions, comments, and votes. Post counter resets to 0."""
+    conn = _conn()
+    c = conn.cursor()
+    for table in ("comment_votes", "comments", "questions"):
+        c.execute(f"DELETE FROM {table}")
+    conn.commit()
+    conn.close()
 
 
 def update_status(question_id: int, status: str, tag: str = ""):

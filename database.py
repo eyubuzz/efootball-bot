@@ -96,6 +96,9 @@ def init_db():
         "ALTER TABLE questions ADD COLUMN channel_msg_id INTEGER",
         "ALTER TABLE questions ADD COLUMN photo_file_id  TEXT",
         "ALTER TABLE questions ADD COLUMN post_number    INTEGER",
+        "ALTER TABLE questions ADD COLUMN voice_file_id  TEXT",
+        "ALTER TABLE comments  ADD COLUMN photo_file_id  TEXT",
+        "ALTER TABLE comments  ADD COLUMN voice_file_id  TEXT",
     ]:
         try:
             c.execute(migration)
@@ -108,12 +111,13 @@ def init_db():
 
 # ── Questions ─────────────────────────────────────────────────────────────────
 
-def save_question(user_id: int, username: str, full_name: str, question: str, photo_file_id: str = None) -> int:
+def save_question(user_id: int, username: str, full_name: str, question: str,
+                  photo_file_id: str = None, voice_file_id: str = None) -> int:
     conn = _conn()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO questions (user_id, username, full_name, question, photo_file_id, status, created_at) VALUES (?,?,?,?,?,'pending',?)",
-        (user_id, username, full_name, question, photo_file_id, datetime.now().isoformat()),
+        "INSERT INTO questions (user_id, username, full_name, question, photo_file_id, voice_file_id, status, created_at) VALUES (?,?,?,?,?,?,'pending',?)",
+        (user_id, username, full_name, question, photo_file_id, voice_file_id, datetime.now().isoformat()),
     )
     qid = c.lastrowid
     conn.commit()
@@ -204,12 +208,13 @@ def get_stats() -> dict:
 
 # ── Comments ──────────────────────────────────────────────────────────────────
 
-def save_comment(question_id: int, user_id: int, username: str, full_name: str, comment: str) -> int:
+def save_comment(question_id: int, user_id: int, username: str, full_name: str,
+                 comment: str = "", photo_file_id: str = None, voice_file_id: str = None) -> int:
     conn = _conn()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO comments (question_id, user_id, username, full_name, comment, created_at) VALUES (?,?,?,?,?,?)",
-        (question_id, user_id, username, full_name, comment, datetime.now().isoformat()),
+        "INSERT INTO comments (question_id, user_id, username, full_name, comment, photo_file_id, voice_file_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (question_id, user_id, username, full_name, comment, photo_file_id, voice_file_id, datetime.now().isoformat()),
     )
     cid = c.lastrowid
     conn.commit()
@@ -235,7 +240,8 @@ def get_comments_page(question_id: int, page: int = 1, per_page: int = 3):
     offset = (page - 1) * per_page
     c.execute("""
         SELECT
-            cm.id, cm.user_id, cm.username, cm.full_name, cm.comment, cm.created_at,
+            cm.id, cm.user_id, cm.username, cm.full_name, cm.comment,
+            cm.photo_file_id, cm.voice_file_id, cm.created_at,
             (SELECT COUNT(*) FROM comment_votes WHERE comment_id=cm.id AND vote_type='up')   AS likes,
             (SELECT COUNT(*) FROM comment_votes WHERE comment_id=cm.id AND vote_type='down') AS dislikes
         FROM comments cm

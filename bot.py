@@ -73,13 +73,17 @@ GATE_CHANNEL_2_URL = "https://t.me/ebuzznationqa"
 
 # TAGS: key → (display_label, hashtag)
 TAGS = {
-    "teambuildup": ("🏗️ Team Build-up", "#TeamBuildup"),
-    "formation":   ("📐 Formation",      "#Formation"),
-    "packs":       ("🎁 Opening Packs",  "#OpeningPacks"),
-    "tactics":     ("🎯 Tactics",        "#Tactics"),
-    "player":      ("⭐ Player Review",  "#PlayerReview"),
-    "budget":      ("💰 Budget Build",   "#BudgetBuild"),
-    "general":     ("🔧 General",        "#General"),
+    "progression": ("📈 Player Progression",   "#PlayerProgression"),
+    "teambuildup": ("🏗️ Team Build-up",        "#TeamBuildup"),
+    "general":     ("🔧 General",              "#General"),
+    "tactics":     ("🎯 Tactics",              "#Tactics"),
+    "manager":     ("👔 Manager",              "#Manager"),
+    "gpplayer":    ("⭐ GP Player",             "#GPPlayer"),
+    "gpmanager":   ("💼 GP Manager",            "#GPManager"),
+    "packs":       ("🎁 Pack Opening",          "#PackOpening"),
+    "potw":        ("🏆 POTW",                 "#POTW"),
+    "contract":    ("📝 Nominating Contract",   "#NominatingContract"),
+    "epoints":     ("💎 eFootball Point",       "#eFootballPoint"),
 }
 
 POWERED_BY = '\n\n<b>Powered By <a href="https://t.me/ebuzznation">eBuzzNation</a></b>'
@@ -173,18 +177,20 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
     if not row:
         return "⚠️ Question not found.", InlineKeyboardMarkup([])
 
-    tag_label, tag_hashtag = TAGS.get(row["tag"] or "", ("", ""))
+    tag_info    = TAGS.get(row["tag"] or "", ("", ""))
+    tag_label   = tag_info[0]
+    tag_hashtag = tag_info[1]
+    post_num    = row["post_number"] or question_id
+
     comments, total = get_comments_page(question_id, page, COMMENTS_PER_PAGE)
     total_pages = max(1, (total + COMMENTS_PER_PAGE - 1) // COMMENTS_PER_PAGE)
     page = max(1, min(page, total_pages))
 
-    lines = [
-        f"💬 *eFootball Question #{question_id}*",
-    ]
+    lines = [f"💬 *Question #{post_num} — Comments*"]
     if tag_label:
-        lines.append(f"_{tag_label}_ {tag_hashtag}")
-    lines.append(f"Displaying page {page}/{total_pages}. Total {total} Comment{'s' if total != 1 else ''}")
-    lines.append("─" * 24)
+        lines.append(f"🏷️ _{tag_label}_  {tag_hashtag}")
+    lines.append(f"📄 Page {page}/{total_pages}  ·  {total} comment{'s' if total != 1 else ''}")
+    lines.append("━" * 22)
 
     if not comments:
         lines.append("\n_No comments yet — be the first!_")
@@ -192,52 +198,64 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
         for i, c in enumerate(comments, 1):
             aura = get_user_aura(c["user_id"])
             name = c["full_name"] or "Anonymous"
-            lines.append(f"\n*[{i}]* 👤 *{name}* ⚡{aura} Aura")
-            lines.append(c["comment"])
+            # Media indicator
+            if c.get("voice_file_id"):
+                body = "🎤 _Voice message_"
+            elif c.get("photo_file_id"):
+                body = "📷 _Photo_"
+            else:
+                body = c["comment"] or ""
+            lines.append(f"\n*{i}.* 👤 *{name}*  ⚡{aura}")
+            lines.append(body)
 
-    lines.append("─" * 24)
+    lines.append("\n" + "━" * 22)
     text = "\n".join(lines)
 
     buttons = []
 
-    # Vote row per comment
+    # Vote + reply row per comment
     for i, c in enumerate(comments, 1):
         buttons.append([
-            InlineKeyboardButton(f"👍 {c['likes']}",  callback_data=f"up_{c['id']}_{question_id}_{page}"),
+            InlineKeyboardButton(f"👍 {c['likes']}",    callback_data=f"up_{c['id']}_{question_id}_{page}"),
             InlineKeyboardButton(f"👎 {c['dislikes']}", callback_data=f"dn_{c['id']}_{question_id}_{page}"),
-            InlineKeyboardButton(f"↩️ Reply #{i}",    callback_data=f"rp_{c['id']}_{question_id}_{page}"),
+            InlineKeyboardButton(f"↩️ #{i}",            callback_data=f"rp_{c['id']}_{question_id}_{page}"),
         ])
 
-    # Navigation row — always 3 buttons to keep layout stable
+    # Navigation
     nav = [
-        InlineKeyboardButton("⬅️ Prev",  callback_data=f"vc_{question_id}_{page - 1}") if page > 1       else InlineKeyboardButton(" ", callback_data="noop"),
-        InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"),
-        InlineKeyboardButton("Next ➡️", callback_data=f"vc_{question_id}_{page + 1}") if page < total_pages else InlineKeyboardButton(" ", callback_data="noop"),
+        InlineKeyboardButton("⬅️", callback_data=f"vc_{question_id}_{page - 1}") if page > 1          else InlineKeyboardButton(" ", callback_data="noop"),
+        InlineKeyboardButton(f"{page}/{total_pages}",  callback_data="noop"),
+        InlineKeyboardButton("➡️", callback_data=f"vc_{question_id}_{page + 1}") if page < total_pages else InlineKeyboardButton(" ", callback_data="noop"),
     ]
     buttons.append(nav)
 
-    buttons.append([InlineKeyboardButton("➕ Add Comment", callback_data=f"ac_{question_id}")])
+    # Add comment — separate row
+    buttons.append([InlineKeyboardButton("✏️ Add Comment", callback_data=f"ac_{question_id}")])
 
     return text, InlineKeyboardMarkup(buttons)
 
 
+def _channel_keyboard(question_id: int, count: int, bot_username: str) -> InlineKeyboardMarkup:
+    """Two-button keyboard for channel posts: View Comments | Add Comment."""
+    link_view = f"https://t.me/{bot_username}?start=c_{question_id}"
+    link_add  = f"https://t.me/{bot_username}?start=a_{question_id}"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"💬 Comments ({count})", url=link_view),
+        InlineKeyboardButton("✏️ Add Comment",          url=link_add),
+    ]])
+
+
 async def update_channel_button(context: ContextTypes.DEFAULT_TYPE, question_id: int):
-    """Edit the channel post to show the updated comment count."""
+    """Edit the channel post buttons to show the updated comment count."""
     row = get_question(question_id)
-    if not row:
+    if not row or not row["channel_msg_id"]:
         return
-    channel_msg_id = row["channel_msg_id"]
-    if not channel_msg_id:
-        return
-    count    = get_comment_count(question_id)
-    bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
+    count = get_comment_count(question_id)
     try:
         await context.bot.edit_message_reply_markup(
             chat_id=CHANNEL_ID,
-            message_id=channel_msg_id,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"💬 View / Add Comments ({count})", url=bot_link)
-            ]]),
+            message_id=row["channel_msg_id"],
+            reply_markup=_channel_keyboard(question_id, count, context.bot.username),
         )
     except Exception as e:
         logger.warning("Could not update channel button: %s", e)
@@ -254,7 +272,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
 
-    # Deep-link: /start c_<question_id>
+    # Deep-link: /start c_<question_id>  → view comments
     if args and args[0].startswith("c_"):
         try:
             question_id = int(args[0][2:])
@@ -262,8 +280,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             question_id = None
         if question_id:
             text, keyboard = build_comments_view(question_id, 1, context.bot.username)
-            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            sent = await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            context.user_data["_last_msg"] = sent.message_id
             return
+
+    # Deep-link: /start a_<question_id>  → go straight to add comment
+    if args and args[0].startswith("a_"):
+        try:
+            question_id = int(args[0][2:])
+        except ValueError:
+            question_id = None
+        if question_id:
+            row = get_question(question_id)
+            if row and row["status"] == "approved":
+                context.user_data["_awaiting_comment_qid"] = question_id
+                sent = await update.message.reply_text(
+                    f"✏️ *Add comment to Question #{row['post_number'] or question_id}*\n\n"
+                    f"Send your text, 🎤 voice, or 📷 photo (3–500 chars for text).\n"
+                    f"Send /cancel to go back.",
+                    parse_mode="Markdown",
+                )
+                context.user_data["_conv_prompt"] = sent.message_id
+                return
 
     # Deep-link: /start u_<user_id>
     if args and args[0].startswith("u_"):
@@ -295,13 +333,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _delete_last(context, update.effective_chat.id)
     sent = await update.message.reply_text(
         "📖 *How to use this bot:*\n\n"
-        "✏️ *Ask Question* — tap the menu button and type your eFootball question.\n"
-        "💬 *Comments* — tap the button under any channel post to view and add comments.\n"
+        "✏️ *Ask Question* — send text, 📷 photo, or 🎤 voice.\n"
+        "💬 *View Comments* — tap under any channel post to browse comments.\n"
+        "✏️ *Add Comment* — tap the button to reply instantly (text, photo, or voice).\n"
         "👍 / 👎 — vote on comments to earn / give *Aura* points.\n"
         "👤 *Profile* — see your stats and Aura.\n\n"
-        "*Topic tags used in the channel:*\n"
-        "🏗️ #TeamBuildup  |  📐 #Formation  |  🎁 #OpeningPacks\n"
-        "🎯 #Tactics  |  ⭐ #PlayerReview  |  💰 #BudgetBuild  |  🔧 #General",
+        "*Topic tags:*\n"
+        "📈 #PlayerProgression · 🏗️ #TeamBuildup · 🔧 #General\n"
+        "🎯 #Tactics · 👔 #Manager · ⭐ #GPPlayer · 💼 #GPManager\n"
+        "🎁 #PackOpening · 🏆 #POTW · 📝 #NominatingContract · 💎 #eFootballPoint",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -505,7 +545,7 @@ async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _delete_last(context, update.effective_chat.id)
     sent = await update.message.reply_text(
         "✏️ *What's your eFootball question?*\n\n"
-        "Type it below (10–600 characters), or send a photo with a caption.\n"
+        "Send text (10–600 chars), a 📷 photo with caption, or a 🎤 voice message.\n"
         "Send /cancel to go back.",
         parse_mode="Markdown",
     )
@@ -513,7 +553,8 @@ async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_QUESTION
 
 
-async def _submit_question(update, context, text: str, photo_file_id: str = None):
+async def _submit_question(update, context, text: str,
+                           photo_file_id: str = None, voice_file_id: str = None):
     """Save question, confirm to user, and notify admin."""
     user = update.effective_user
     qid = save_question(
@@ -522,6 +563,7 @@ async def _submit_question(update, context, text: str, photo_file_id: str = None
         full_name=user.full_name or "Unknown",
         question=text,
         photo_file_id=photo_file_id,
+        voice_file_id=voice_file_id,
     )
 
     prompt_id = context.user_data.pop("_conv_prompt", None)
@@ -537,7 +579,7 @@ async def _submit_question(update, context, text: str, photo_file_id: str = None
     )
     context.user_data["_last_msg"] = conf.message_id
 
-    user_tag = f" (@{user.username})" if user.username else ""
+    user_tag      = f" (@{user.username})" if user.username else ""
     admin_caption = (
         f"🔔 *New Question — #{qid}*\n\n"
         f"👤 *From:* {user.full_name}{user_tag}\n"
@@ -546,18 +588,18 @@ async def _submit_question(update, context, text: str, photo_file_id: str = None
     )
     if photo_file_id:
         await context.bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=photo_file_id,
-            caption=admin_caption,
-            reply_markup=review_keyboard(qid),
-            parse_mode="Markdown",
+            chat_id=ADMIN_ID, photo=photo_file_id,
+            caption=admin_caption, reply_markup=review_keyboard(qid), parse_mode="Markdown",
+        )
+    elif voice_file_id:
+        await context.bot.send_voice(
+            chat_id=ADMIN_ID, voice=voice_file_id,
+            caption=admin_caption, reply_markup=review_keyboard(qid), parse_mode="Markdown",
         )
     else:
         await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=admin_caption,
-            reply_markup=review_keyboard(qid),
-            parse_mode="Markdown",
+            chat_id=ADMIN_ID, text=admin_caption,
+            reply_markup=review_keyboard(qid), parse_mode="Markdown",
         )
     return ConversationHandler.END
 
@@ -594,14 +636,21 @@ async def ask_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _submit_question(update, context, caption, photo_file_id)
 
 
+async def ask_receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    voice_file_id = update.message.voice.file_id
+    return await _submit_question(update, context, "🎤 Voice question", voice_file_id=voice_file_id)
+
+
 # ── Add Comment (user_data flag approach — avoids ConversationHandler/callback issues) ──
 
 async def _open_comment_prompt(query, context: ContextTypes.DEFAULT_TYPE, question_id: int, label: str):
     """Set the awaiting-comment flag and send the prompt."""
+    row = get_question(question_id)
+    display_num = (row["post_number"] or question_id) if row else question_id
     context.user_data["_awaiting_comment_qid"] = question_id
     sent = await query.message.reply_text(
-        f"{label} *Question #{question_id}*\n\n"
-        f"Type your comment below (3–500 characters).\n"
+        f"{label} *Question #{display_num}*\n\n"
+        f"Send your text, 🎤 voice, or 📷 photo.\n"
         f"Send /cancel to go back.",
         parse_mode="Markdown",
     )
@@ -609,22 +658,33 @@ async def _open_comment_prompt(query, context: ContextTypes.DEFAULT_TYPE, questi
 
 
 async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle an incoming comment text when the user is in awaiting-comment state."""
+    """Handle text/voice/photo comment when the user is in awaiting-comment state."""
     question_id = context.user_data.get("_awaiting_comment_qid")
     if not question_id:
         return  # not waiting for a comment — let other handlers deal with it
 
-    text = update.message.text.strip()
+    msg = update.message
 
-    if len(text) < 3:
-        await update.message.reply_text("⚠️ Too short. Try again.")
-        return
+    # Determine comment type
+    photo_file_id = None
+    voice_file_id = None
+    text_body     = ""
 
-    if len(text) > 500:
-        await update.message.reply_text("⚠️ Too long (max 500 chars). Please shorten.")
-        return
+    if msg.voice:
+        voice_file_id = msg.voice.file_id
+    elif msg.photo:
+        photo_file_id = msg.photo[-1].file_id
+        text_body     = (msg.caption or "").strip()
+    else:
+        text_body = (msg.text or "").strip()
+        if len(text_body) < 3:
+            await msg.reply_text("⚠️ Too short. Try again.")
+            return
+        if len(text_body) > 500:
+            await msg.reply_text("⚠️ Too long (max 500 chars). Please shorten.")
+            return
 
-    # Clear state first
+    # Clear state
     context.user_data.pop("_awaiting_comment_qid", None)
     prompt_id = context.user_data.pop("_conv_prompt", None)
     if prompt_id:
@@ -636,20 +696,22 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user.id,
         username=user.username or "",
         full_name=user.full_name or "Unknown",
-        comment=text,
+        comment=text_body,
+        photo_file_id=photo_file_id,
+        voice_file_id=voice_file_id,
     )
 
     await update_channel_button(context, question_id)
 
     row = get_question(question_id)
     if row and row["user_id"] != user.id:
+        kind = "🎤 voice message" if voice_file_id else ("📷 photo" if photo_file_id else text_body)
         try:
             await context.bot.send_message(
                 chat_id=row["user_id"],
                 text=(
-                    f"💬 *New comment on your Question #{question_id}!*\n\n"
-                    f"❓ {row['question']}\n\n"
-                    f"👤 {user.full_name}: {text}"
+                    f"💬 *New comment on your Question #{row['post_number'] or question_id}!*\n\n"
+                    f"👤 {user.full_name}: {kind}"
                 ),
                 parse_mode="Markdown",
             )
@@ -658,7 +720,7 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     count    = get_comment_count(question_id)
     bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
-    conf = await update.message.reply_text(
+    conf = await msg.reply_text(
         f"✅ *Comment posted!*\n\n"
         f"[View all {count} comment{'s' if count != 1 else ''}]({bot_link})",
         parse_mode="Markdown",
@@ -819,11 +881,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{tag_hashtag}"
             f"{POWERED_BY}"
         )
-        bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("💬 View / Add Comments (0)", url=bot_link)]])
+        btn = _channel_keyboard(question_id, 0, context.bot.username)
 
-        # Post to channel — photo or text
-        if row["photo_file_id"]:
+        # Post to channel — photo, voice, or text
+        if row["voice_file_id"]:
+            msg = await context.bot.send_voice(
+                chat_id=CHANNEL_ID,
+                voice=row["voice_file_id"],
+                caption=channel_caption,
+                parse_mode="HTML",
+                reply_markup=btn,
+            )
+        elif row["photo_file_id"]:
             msg = await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=row["photo_file_id"],
@@ -1149,7 +1218,8 @@ def main():
         states={
             WAITING_QUESTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_receive),
-                MessageHandler(filters.PHOTO, ask_receive_photo),
+                MessageHandler(filters.PHOTO,                   ask_receive_photo),
+                MessageHandler(filters.VOICE,                   ask_receive_voice),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -1170,9 +1240,10 @@ def main():
         allow_reentry=True,
     )
 
-    # Group 0: comment_receive runs first; if no pending comment it exits immediately.
-    # Groups are all passed the update, so ask_conv in group 1 still sees text messages.
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, comment_receive), group=0)
+    # Group 0: comment_receive runs first for text/voice/photo.
+    # If no pending comment it exits immediately; groups are independent so ask_conv still fires.
+    _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND
+    app.add_handler(MessageHandler(_comment_filter, comment_receive), group=0)
     app.add_handler(ask_conv,   group=1)
     app.add_handler(sched_conv, group=1)
     app.add_handler(CommandHandler("start",    start))

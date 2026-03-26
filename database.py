@@ -19,12 +19,18 @@ _log = _logging.getLogger(__name__)
 def _http() -> httpx.Client:
     global _client
     if _client is None:
-        url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
-        key = os.getenv("SUPABASE_KEY", "").strip()
+        import re
+        raw_url = os.getenv("SUPABASE_URL", "")
+        raw_key = os.getenv("SUPABASE_KEY", "")
+        _log.info("SUPABASE_URL raw repr: %r", raw_url[:60])
+        # Strip ALL non-printable and non-ASCII characters, not just whitespace
+        url = re.sub(r'[^\x20-\x7E]', '', raw_url).strip().rstrip("/")
+        key = re.sub(r'[^\x20-\x7E]', '', raw_key).strip()
+        _log.info("SUPABASE_URL cleaned: %r", url)
         if not url:
-            raise RuntimeError("SUPABASE_URL env var is not set")
+            raise RuntimeError("SUPABASE_URL env var is not set or contains only invalid characters")
         if not key:
-            raise RuntimeError("SUPABASE_KEY env var is not set")
+            raise RuntimeError("SUPABASE_KEY env var is not set or contains only invalid characters")
         base = f"{url}/rest/v1/"
         _log.info("Supabase client init — base_url=%s key_len=%d", base, len(key))
         _client = httpx.Client(

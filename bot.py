@@ -591,14 +591,15 @@ async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not await _is_subscribed(context.bot, user.id):
         await _send_gate(update, context)
-        return ConversationHandler.END
+        return
     try:
         ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
     except Exception as e:
         logger.error("ask_start ensure_user_profile failed: %s", e)
         await update.message.reply_text(f"⚠️ DB error ({type(e).__name__}): {str(e)[:200]}")
-        return ConversationHandler.END
+        return
     await _delete_last(context, update.effective_chat.id)
+    context.user_data["_awaiting_question"] = True
     sent = await update.message.reply_text(
         "✏️ *What's your eFootball question?*\n\n"
         "Send text (10–600 chars), a 📷 photo with caption, or a 🎤 voice message.\n"
@@ -606,7 +607,6 @@ async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     context.user_data["_conv_prompt"] = sent.message_id
-    return WAITING_QUESTION
 
 
 async def _submit_question(update, context, text: str,
@@ -819,6 +819,46 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Ask question flow ──
+    if context.user_data.get("_awaiting_question"):
+        msg = update.message
+        photo_file_id = None
+        voice_file_id = None
+        text_body = ""
+        if msg.voice:
+            voice_file_id = msg.voice.file_id
+            text_body = "🎤 Voice question"
+        elif msg.photo:
+            photo_file_id = msg.photo[-1].file_id
+            text_body = (msg.caption or "").strip()
+            if len(text_body) < 10:
+                await msg.reply_text(
+                    "⚠️ Please add a caption describing your question (min 10 characters).\n"
+                    "Send the photo again with a caption, or just type your question as text."
+                )
+                return
+            if len(text_body) > 600:
+                await msg.reply_text("⚠️ Caption too long (max 600 chars). Please shorten it.")
+                return
+        else:
+            text_body = (msg.text or "").strip()
+            if len(text_body) < 10:
+                await msg.reply_text("⚠️ Too short — add more detail and try again.")
+                return
+            if len(text_body) > 600:
+                await msg.reply_text("⚠️ Too long (max 600 chars). Please shorten your question.")
+                return
+        context.user_data.pop("_awaiting_question", None)
+        try:
+            await _submit_question(update, context, text_body, photo_file_id, voice_file_id)
+        except Exception as e:
+            logger.error("question submission failed: %s: %s", type(e).__name__, e)
+            await msg.reply_text(
+                f"⚠️ Failed to submit ({type(e).__name__}): {str(e)[:200]}\n\nPlease try again.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+        return
+
     # ── Regular comment flow ──
     question_id = context.user_data.get("_awaiting_comment_qid")
     if not question_id:
@@ -909,6 +949,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _delete_last(context, update.effective_chat.id)
     context.user_data.pop("_reject_qid", None)
     context.user_data.pop("_awaiting_comment_qid", None)
+    context.user_data.pop("_awaiting_question", None)
     context.user_data.clear()
     sent = await update.message.reply_text("✅ Cancelled.", reply_markup=MAIN_KEYBOARD)
     context.user_data["_last_msg"] = sent.message_id
@@ -1587,22 +1628,6 @@ def main():
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
     app.add_error_handler(error_handler)
 
-    # Conversation handler: question submission
-    ask_conv = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Text(["✏️ Ask Question"]), ask_start),
-        ],
-        states={
-            WAITING_QUESTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_receive),
-                MessageHandler(filters.PHOTO,                   ask_receive_photo),
-                MessageHandler(filters.VOICE,                   ask_receive_voice),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True,
-    )
-
     # Conversation handler: schedule post (admin)
     sched_conv = ConversationHandler(
         entry_points=[CommandHandler("schedule", sched_start)],
@@ -1624,7 +1649,7 @@ def main():
     ])
     _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND & ~_keyboard_texts
     app.add_handler(MessageHandler(_comment_filter, comment_receive), group=0)
-    app.add_handler(ask_conv,   group=1)
+    app.add_handler(MessageHandler(filters.Text(["✏️ Ask Question"]), ask_start), group=1)
     app.add_handler(sched_conv, group=1)
     app.add_handler(CommandHandler("start",        start))
     app.add_handler(CommandHandler("help",         help_command))

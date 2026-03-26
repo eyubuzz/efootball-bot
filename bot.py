@@ -1509,7 +1509,7 @@ async def weekly_digest(context: ContextTypes.DEFAULT_TYPE):
         logger.error("Weekly digest failed: %s", e)
 
 
-# ── Admin: broadcast v2.0 ─────────────────────────────────────────────────────
+# ── Admin: broadcast v2.1 ─────────────────────────────────────────────────────
 
 async def broadcast_v2_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1528,18 +1528,17 @@ async def broadcast_v2_command(update: Update, context: ContextTypes.DEFAULT_TYP
     status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users…")
 
     message = (
-        "🎉 *eFootball Q&A Bot v2.0 is here!*\n\n"
-        "Here's what's new:\n\n"
-        "🔍 `/search` — Search any Q&A by keyword\n"
-        "📋 `/mystatus` — See all your submitted questions\n"
-        "🎤 Voice questions & comments\n"
-        "📷 Photo questions & comments\n"
-        "💬 Separate View & Add Comment buttons\n"
-        "⚡ Aura points for helpful comments\n"
-        "👥 Discover other players\n"
-        "📅 Weekly top Q&A digest every Sunday\n"
-        "🌍 Amharic language support\n\n"
-        "Use the menu below to get started! 👇"
+        "🔧 *eBuzzNation Q&A Bot — v2.1 Update*\n\n"
+        "We fixed several issues. Here's what's working now:\n\n"
+        "✅ *Ask Question* — fixed, no more freezing\n"
+        "✅ *Persistent data* — your questions & comments are never lost\n"
+        "✅ *Daily limit* — max 3 questions per day per user\n"
+        "✅ *Duplicate detection* — similar questions are flagged\n"
+        "✅ *Rejection reason* — admin can now send a reason when declining\n\n"
+        "📋 `/mystatus` — view all your submitted questions\n"
+        "🔍 `/search` — search approved Q&As by keyword\n"
+        "🎤 Voice & 📷 photo questions supported\n\n"
+        "Tap *✏️ Ask Question* to get started! 👇"
     )
 
     sent_count, fail_count = 0, 0

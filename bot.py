@@ -300,9 +300,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
     except Exception as e:
-        logger.error("ensure_user_profile failed for %s: %s", user.id, e)
+        logger.error("ensure_user_profile failed for user %s: %s: %s", user.id, type(e).__name__, e)
         await update.message.reply_text(
-            "⚠️ Database connection error. Please try again in a moment."
+            f"⚠️ DB error ({type(e).__name__}): {str(e)[:200]}"
         )
         return
 
@@ -1549,6 +1549,12 @@ async def publish_scheduled_posts(context: ContextTypes.DEFAULT_TYPE):
             logger.error("Failed to publish scheduled post #%s: %s", post["id"], e)
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Log ALL unhandled exceptions so they show up in Railway logs."""
+    logger.error("Unhandled exception: %s: %s", type(context.error).__name__, context.error,
+                 exc_info=context.error)
+
+
 def main():
     import os
     init_db()
@@ -1557,6 +1563,7 @@ def main():
     persistence = PicklePersistence(filepath="bot_persistence.pickle")
 
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
+    app.add_error_handler(error_handler)
 
     # Conversation handler: question submission
     ask_conv = ConversationHandler(

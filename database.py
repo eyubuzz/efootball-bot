@@ -12,19 +12,29 @@ from datetime import datetime, timedelta, date
 _client: httpx.Client | None = None
 
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
+
 def _http() -> httpx.Client:
     global _client
     if _client is None:
         url = os.getenv("SUPABASE_URL", "").rstrip("/")
         key = os.getenv("SUPABASE_KEY", "")
+        if not url:
+            raise RuntimeError("SUPABASE_URL env var is not set")
+        if not key:
+            raise RuntimeError("SUPABASE_KEY env var is not set")
+        base = f"{url}/rest/v1/"
+        _log.info("Supabase client init — base_url=%s key_len=%d", base, len(key))
         _client = httpx.Client(
-            base_url=f"{url}/rest/v1/",
+            base_url=base,
             headers={
                 "apikey": key,
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
             },
-            timeout=30.0,
+            timeout=15.0,
         )
     return _client
 
@@ -33,8 +43,15 @@ def _get(table: str, params: dict = None, *, count: bool = False, extra_headers:
     h = dict(extra_headers or {})
     if count:
         h["Prefer"] = "count=exact"
-    resp = _http().get(table, params=params or {}, headers=h)
-    resp.raise_for_status()
+    try:
+        resp = _http().get(table, params=params or {}, headers=h)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _log.error("GET %s status %s: %s", table, e.response.status_code, e.response.text[:300])
+        raise
+    except Exception as e:
+        _log.error("GET %s error: %s", table, e)
+        raise
     if count:
         cr = resp.headers.get("content-range", "*/0")
         total = int(cr.split("/")[-1]) if "/" in cr else 0
@@ -43,8 +60,15 @@ def _get(table: str, params: dict = None, *, count: bool = False, extra_headers:
 
 
 def _post(table: str, data, *, prefer: str = "return=representation"):
-    resp = _http().post(table, json=data, headers={"Prefer": prefer})
-    resp.raise_for_status()
+    try:
+        resp = _http().post(table, json=data, headers={"Prefer": prefer})
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _log.error("POST %s status %s: %s", table, e.response.status_code, e.response.text[:300])
+        raise
+    except Exception as e:
+        _log.error("POST %s error: %s", table, e)
+        raise
     rows = resp.json()
     if isinstance(data, list):
         return rows
@@ -52,23 +76,44 @@ def _post(table: str, data, *, prefer: str = "return=representation"):
 
 
 def _patch(table: str, filters: dict, data: dict):
-    resp = _http().patch(table, params=filters, json=data)
-    resp.raise_for_status()
+    try:
+        resp = _http().patch(table, params=filters, json=data)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _log.error("PATCH %s status %s: %s", table, e.response.status_code, e.response.text[:300])
+        raise
+    except Exception as e:
+        _log.error("PATCH %s error: %s", table, e)
+        raise
 
 
 def _delete(table: str, filters: dict):
-    resp = _http().delete(table, params=filters)
-    resp.raise_for_status()
+    try:
+        resp = _http().delete(table, params=filters)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _log.error("DELETE %s status %s: %s", table, e.response.status_code, e.response.text[:300])
+        raise
+    except Exception as e:
+        _log.error("DELETE %s error: %s", table, e)
+        raise
 
 
 def _upsert(table: str, data: dict, on_conflict: str) -> dict:
-    resp = _http().post(
-        table,
-        params={"on_conflict": on_conflict},
-        json=data,
-        headers={"Prefer": "return=representation,resolution=merge-duplicates"},
-    )
-    resp.raise_for_status()
+    try:
+        resp = _http().post(
+            table,
+            params={"on_conflict": on_conflict},
+            json=data,
+            headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _log.error("UPSERT %s status %s: %s", table, e.response.status_code, e.response.text[:300])
+        raise
+    except Exception as e:
+        _log.error("UPSERT %s error: %s", table, e)
+        raise
     rows = resp.json()
     return rows[0] if rows else {}
 
@@ -76,12 +121,18 @@ def _upsert(table: str, data: dict, on_conflict: str) -> dict:
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 def init_db():
-    """Verify connection on startup."""
+    """Verify connection on startup — logs result to Railway logs."""
+    url = os.getenv("SUPABASE_URL", "")
+    key = os.getenv("SUPABASE_KEY", "")
+    _log.info("init_db: SUPABASE_URL=%s SUPABASE_KEY=%s",
+              (url[:20] + "...") if url else "(NOT SET)",
+              ("set, len=" + str(len(key))) if key else "(NOT SET)")
     try:
         _get("questions", {"limit": "1"})
+        _log.info("init_db: Supabase connection OK")
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error("Supabase connection failed: %s", e)
+        _log.error("init_db: Supabase connection FAILED — %s", e)
+        _log.error("init_db: Make sure SUPABASE_URL and SUPABASE_KEY are set in Railway Variables")
 
 
 # ── Questions ─────────────────────────────────────────────────────────────────

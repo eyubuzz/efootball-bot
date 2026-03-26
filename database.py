@@ -3,6 +3,8 @@ database.py — Supabase REST API via httpx (PostgREST).
 Uses SUPABASE_URL and SUPABASE_KEY environment variables.
 Run supabase_schema.sql once in the Supabase SQL Editor to create the tables.
 """
+from __future__ import annotations
+
 import os
 import httpx
 from datetime import datetime, timedelta, date

@@ -84,6 +84,7 @@ GATE_CHANNEL_2_URL = "https://t.me/ebuzznationqa"
 TAGS = {
     "progression": ("📈 Player Progression",   "#PlayerProgression"),
     "teambuildup": ("🏗️ Team Build-up",        "#TeamBuildup"),
+    "formation":   ("⚽ Formation",            "#Formation"),
     "general":     ("🔧 General",              "#General"),
     "tactics":     ("🎯 Tactics",              "#Tactics"),
     "manager":     ("👔 Manager",              "#Manager"),
@@ -1101,10 +1102,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✏️ <b>Rejecting Question #{question_id}</b>\n\n"
             f"👤 {html.escape(row['full_name'] or '')}\n"
             f"❓ {html.escape(row['question'] or '')}\n\n"
-            f"Type your rejection reason and send it.\n"
-            f"Send /cancel to abort.",
+            f"Type your rejection reason and send it.",
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_reject_{question_id}"),
+            ]]),
         )
+        return
+
+    # ── Admin: cancel rejection (inline button) ──
+    if data.startswith("cancel_reject_"):
+        if query.from_user.id != ADMIN_ID:
+            await query.answer("⛔ Not authorized.", show_alert=True)
+            return
+        await query.answer("Cancelled.")
+        question_id = int(data.split("_", 2)[2])
+        context.user_data.pop("_reject_qid", None)
+        row = get_question(question_id)
+        if row:
+            await _edit_admin_msg(
+                query,
+                f"🔔 <b>Question #{question_id}</b>\n\n"
+                f"👤 {html.escape(row['full_name'] or '')}\n"
+                f"❓ {html.escape(row['question'] or '')}",
+                parse_mode="HTML",
+                reply_markup=review_keyboard(question_id),
+            )
         return
 
     # ── Toggle profile visibility ──

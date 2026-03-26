@@ -1749,7 +1749,7 @@ def main():
     _keyboard_texts = filters.Text([
         "✏️ Ask Question", "📋 My Status", "🔍 Discover", "👤 Profile", "ℹ️ Help",
     ])
-    _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO | filters.Sticker.ALL | filters.Animation) & ~filters.COMMAND & ~_keyboard_texts
+    _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO | filters.Sticker.ALL | filters._Animation) & ~filters.COMMAND & ~_keyboard_texts
     app.add_handler(MessageHandler(_comment_filter, comment_receive), group=0)
     app.add_handler(MessageHandler(filters.Text(["✏️ Ask Question"]), ask_start), group=1)
     app.add_handler(sched_conv, group=1)

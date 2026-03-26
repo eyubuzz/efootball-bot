@@ -264,12 +264,12 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
 
 
 def _channel_keyboard(question_id: int, count: int, bot_username: str) -> InlineKeyboardMarkup:
-    """Two-button keyboard for channel posts: View Comments | Add Comment."""
+    """Two-button keyboard for channel posts: Comment | Read Comments."""
     link_view = f"https://t.me/{bot_username}?start=c_{question_id}"
     link_add  = f"https://t.me/{bot_username}?start=a_{question_id}"
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"💬 Comments ({count})", url=link_view),
-        InlineKeyboardButton("✏️ Add Comment",          url=link_add),
+        InlineKeyboardButton("✏️ Comment",        url=link_add),
+        InlineKeyboardButton("💬 Read Comments",  url=link_view),
     ]])
 
 
@@ -752,7 +752,44 @@ async def _open_comment_prompt(query, context: ContextTypes.DEFAULT_TYPE, questi
 
 
 async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text/voice/photo comment when the user is in awaiting-comment state."""
+    """Handle text/voice/photo comment when the user is in awaiting-comment state.
+    Also handles admin rejection reason input."""
+
+    # ── Admin: rejection reason ──
+    reject_qid = context.user_data.get("_reject_qid")
+    if reject_qid and update.effective_user.id == ADMIN_ID:
+        reason = (update.message.text or "").strip()
+        if not reason:
+            await update.message.reply_text("⚠️ Please type a reason (text only).")
+            return
+        context.user_data.pop("_reject_qid", None)
+        row = get_question(reject_qid)
+        if not row or row["status"] != "pending":
+            await update.message.reply_text("⚠️ Question no longer pending.")
+            return
+        update_status(reject_qid, "rejected")
+        # Notify user with reason
+        try:
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    f"❌ *Your question wasn't approved this time.*\n\n"
+                    f"❓ {row['question']}\n\n"
+                    f"📝 *Reason:* {reason}\n\n"
+                    f"Feel free to rephrase and submit again!"
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        await update.message.reply_text(
+            f"❌ *Rejected — #{reject_qid}*\n\n"
+            f"📝 Reason sent to user: _{reason}_",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── Regular comment flow ──
     question_id = context.user_data.get("_awaiting_comment_qid")
     if not question_id:
         return  # not waiting for a comment — let other handlers deal with it
@@ -949,11 +986,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await _edit_admin_msg(
             query,
-            f"🏷️ *Select tag for Question #{question_id}*\n\n"
-            f"👤 {row['full_name']}\n"
-            f"❓ {row['question']}\n\n"
+            f"🏷️ <b>Select tag for Question #{question_id}</b>\n\n"
+            f"👤 {html.escape(row['full_name'] or '')}\n"
+            f"❓ {html.escape(row['question'] or '')}\n\n"
             f"Choose the best topic:",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=tag_selection_keyboard(question_id),
         )
         return
@@ -1034,16 +1071,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await _edit_admin_msg(
             query,
-            f"✅ *Approved & Posted — Channel #{post_num}*\n\n"
-            f"🏷️ {tag_label}\n"
-            f"👤 {row['full_name']}\n"
-            f"❓ {row['question']}\n\n"
+            f"✅ <b>Approved &amp; Posted — Channel #{post_num}</b>\n\n"
+            f"🏷️ {html.escape(tag_label)}\n"
+            f"👤 {html.escape(row['full_name'] or '')}\n"
+            f"❓ {html.escape(row['question'] or '')}\n\n"
             f"📢 Posted to channel.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
 
-    # ── Admin: reject ──
+    # ── Admin: reject — ask for reason first ──
     if data.startswith("reject_"):
         if query.from_user.id != ADMIN_ID:
             await query.answer("⛔ Not authorized.", show_alert=True)
@@ -1057,25 +1094,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row["status"] != "pending":
             await _edit_admin_msg(query, f"⚠️ Already {row['status']}.")
             return
-        update_status(question_id, "rejected")
-        try:
-            await context.bot.send_message(
-                chat_id=row["user_id"],
-                text=(
-                    f"❌ *Your question wasn't approved this time.*\n\n"
-                    f"❓ {row['question']}\n\n"
-                    f"Feel free to rephrase and submit again!"
-                ),
-                parse_mode="Markdown",
-            )
-        except Exception:
-            pass
+        # Store pending rejection and ask for reason
+        context.user_data["_reject_qid"] = question_id
         await _edit_admin_msg(
             query,
-            f"❌ *Rejected — #{question_id}*\n\n"
-            f"👤 {row['full_name']}\n"
-            f"❓ {row['question']}",
-            parse_mode="Markdown",
+            f"✏️ <b>Rejecting Question #{question_id}</b>\n\n"
+            f"👤 {html.escape(row['full_name'] or '')}\n"
+            f"❓ {html.escape(row['question'] or '')}\n\n"
+            f"Type your rejection reason and send it.\n"
+            f"Send /cancel to abort.",
+            parse_mode="HTML",
         )
         return
 

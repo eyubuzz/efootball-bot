@@ -280,6 +280,145 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
     return text, InlineKeyboardMarkup(buttons), "HTML"
 
 
+async def _delete_comment_msgs(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Delete all previously sent individual comment messages."""
+    msgs = context.user_data.pop("_comment_msgs", [])
+    for mid in msgs:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception:
+            pass
+
+
+async def send_comments_individual(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    question_id: int,
+    page: int,
+):
+    """Send each comment as its own message with vote/reply buttons below."""
+    await _delete_comment_msgs(chat_id, context)
+
+    row = get_question(question_id)
+    if not row:
+        sent = await context.bot.send_message(chat_id, "⚠️ Question not found.")
+        context.user_data["_comment_msgs"] = [sent.message_id]
+        return
+
+    tag_info  = TAGS.get(row["tag"] or "", ("", ""))
+    tag_label = tag_info[0]
+    post_num  = row["post_number"] or question_id
+
+    comments, total = get_comments_page(question_id, page, COMMENTS_PER_PAGE)
+    total_pages = max(1, (total + COMMENTS_PER_PAGE - 1) // COMMENTS_PER_PAGE)
+    page = max(1, min(page, total_pages))
+
+    sent_ids = []
+    msg_map  = {}  # comment_id -> message_id (the message that holds the vote keyboard)
+
+    # ── Header ──
+    q_preview = html.escape((row["question"] or "")[:120])
+    header = (
+        f"💬 <b>Question #{post_num}</b>\n"
+        f"{q_preview}\n"
+        f"<i>{'🏷️ ' + tag_label + '  · ' if tag_label else ''}"
+        f"{total} comment{'s' if total != 1 else ''}</i>"
+    )
+    sent = await context.bot.send_message(chat_id, header, parse_mode="HTML")
+    sent_ids.append(sent.message_id)
+
+    if not comments:
+        sent = await context.bot.send_message(
+            chat_id, "<i>No comments yet — be the first!</i>", parse_mode="HTML"
+        )
+        sent_ids.append(sent.message_id)
+    else:
+        bot_username = context.bot.username
+        for c in comments:
+            aura       = get_user_aura(c["user_id"])
+            name       = html.escape(c["full_name"] or "Anonymous")
+            pf         = c.get("photo_file_id") or ""
+            profile_url = f"https://t.me/{bot_username}?start=u_{c['user_id']}"
+            caption    = f'<a href="{profile_url}"><b>{name}</b></a>  ⚡{aura} aura'
+
+            vote_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"👍 {c['likes']}",    callback_data=f"up_{c['id']}_{question_id}_{page}"),
+                InlineKeyboardButton(f"👎 {c['dislikes']}", callback_data=f"dn_{c['id']}_{question_id}_{page}"),
+                InlineKeyboardButton("↩️ Reply",            callback_data=f"rp_{c['id']}_{question_id}_{page}"),
+            ]])
+
+            try:
+                if c.get("voice_file_id"):
+                    sent = await context.bot.send_voice(
+                        chat_id, c["voice_file_id"],
+                        caption=caption, parse_mode="HTML", reply_markup=vote_kb,
+                    )
+                    msg_map[c["id"]] = sent.message_id
+                    sent_ids.append(sent.message_id)
+                elif pf.startswith("sticker:"):
+                    sticker_msg = await context.bot.send_sticker(chat_id, pf[8:])
+                    sent_ids.append(sticker_msg.message_id)
+                    # Buttons on a separate text message (stickers can't have keyboards)
+                    sent = await context.bot.send_message(
+                        chat_id, caption, parse_mode="HTML", reply_markup=vote_kb
+                    )
+                    msg_map[c["id"]] = sent.message_id
+                    sent_ids.append(sent.message_id)
+                elif pf.startswith("anim:"):
+                    sent = await context.bot.send_animation(
+                        chat_id, pf[5:],
+                        caption=caption, parse_mode="HTML", reply_markup=vote_kb,
+                    )
+                    msg_map[c["id"]] = sent.message_id
+                    sent_ids.append(sent.message_id)
+                elif pf:
+                    sent = await context.bot.send_photo(
+                        chat_id, pf,
+                        caption=caption, parse_mode="HTML", reply_markup=vote_kb,
+                    )
+                    msg_map[c["id"]] = sent.message_id
+                    sent_ids.append(sent.message_id)
+                else:
+                    body = html.escape(c["comment"] or "")
+                    sent = await context.bot.send_message(
+                        chat_id,
+                        f"{body}\n\n{caption}",
+                        parse_mode="HTML",
+                        reply_markup=vote_kb,
+                    )
+                    msg_map[c["id"]] = sent.message_id
+                    sent_ids.append(sent.message_id)
+            except Exception as e:
+                logger.error("Error sending comment %s: %s", c["id"], e)
+                try:
+                    sent = await context.bot.send_message(
+                        chat_id, caption, parse_mode="HTML", reply_markup=vote_kb
+                    )
+                    msg_map[c["id"]] = sent.message_id
+                    sent_ids.append(sent.message_id)
+                except Exception:
+                    pass
+
+    # ── Footer: navigation + add comment ──
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"vc_{question_id}_{page - 1}"))
+    nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"vc_{question_id}_{page + 1}"))
+    footer_kb = InlineKeyboardMarkup([
+        nav,
+        [InlineKeyboardButton("✏️ Add Comment", callback_data=f"ac_{question_id}")],
+    ])
+    sent = await context.bot.send_message(chat_id, "─────────────────────", reply_markup=footer_kb)
+    sent_ids.append(sent.message_id)
+
+    context.user_data["_comment_msgs"]    = sent_ids
+    context.user_data["_comment_msg_map"] = msg_map
+    context.user_data["_comment_qid"]     = question_id
+    context.user_data["_comment_page"]    = page
+
+
 def _channel_keyboard(question_id: int, count: int, bot_username: str) -> InlineKeyboardMarkup:
     """Two-button keyboard for channel posts: Comment | Read (N)."""
     link_view = f"https://t.me/{bot_username}?start=c_{question_id}"
@@ -362,15 +501,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if question_id:
             row = get_question(question_id)
             if not row:
-                sent = await update.message.reply_text(
+                await update.message.reply_text(
                     "⚠️ This question is no longer available.",
                     reply_markup=MAIN_KEYBOARD,
                 )
-                context.user_data["_last_msg"] = sent.message_id
                 return
-            text, keyboard, _pm = build_comments_view(question_id, 1, context.bot.username)
-            sent = await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
-            context.user_data["_last_msg"] = sent.message_id
+            await send_comments_individual(update.effective_chat.id, context, question_id, 1)
             return
 
     # Deep-link: /start a_<question_id>  → go straight to add comment
@@ -1120,8 +1256,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("vc_"):
         await query.answer()
         _, qid, page = data.split("_")
-        text, keyboard, _pm = build_comments_view(int(qid), int(page), context.bot.username)
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        await send_comments_individual(query.message.chat_id, context, int(qid), int(page))
         return
 
     # ── Vote up ──
@@ -1129,11 +1264,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, cid, qid, page = data.split("_")
         likes, dislikes = vote_comment(int(cid), query.from_user.id, "up")
         await query.answer(f"👍 {likes}")
-        text, keyboard, _pm = build_comments_view(int(qid), int(page), context.bot.username)
-        try:
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
-        except Exception:
-            pass
+        msg_map = context.user_data.get("_comment_msg_map", {})
+        mid = msg_map.get(int(cid))
+        if mid:
+            new_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"👍 {likes}",    callback_data=f"up_{cid}_{qid}_{page}"),
+                InlineKeyboardButton(f"👎 {dislikes}", callback_data=f"dn_{cid}_{qid}_{page}"),
+                InlineKeyboardButton("↩️ Reply",       callback_data=f"rp_{cid}_{qid}_{page}"),
+            ]])
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=query.message.chat_id, message_id=mid, reply_markup=new_kb
+                )
+            except Exception:
+                pass
         return
 
     # ── Vote down ──
@@ -1141,11 +1285,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, cid, qid, page = data.split("_")
         likes, dislikes = vote_comment(int(cid), query.from_user.id, "down")
         await query.answer(f"👎 {dislikes}")
-        text, keyboard, _pm = build_comments_view(int(qid), int(page), context.bot.username)
-        try:
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
-        except Exception:
-            pass
+        msg_map = context.user_data.get("_comment_msg_map", {})
+        mid = msg_map.get(int(cid))
+        if mid:
+            new_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"👍 {likes}",    callback_data=f"up_{cid}_{qid}_{page}"),
+                InlineKeyboardButton(f"👎 {dislikes}", callback_data=f"dn_{cid}_{qid}_{page}"),
+                InlineKeyboardButton("↩️ Reply",       callback_data=f"rp_{cid}_{qid}_{page}"),
+            ]])
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=query.message.chat_id, message_id=mid, reply_markup=new_kb
+                )
+            except Exception:
+                pass
         return
 
     # ── Admin: show tag picker ──

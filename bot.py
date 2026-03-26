@@ -591,8 +591,13 @@ async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not await _is_subscribed(context.bot, user.id):
         await _send_gate(update, context)
-        return WAITING_QUESTION
-    ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+        return ConversationHandler.END
+    try:
+        ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+    except Exception as e:
+        logger.error("ask_start ensure_user_profile failed: %s", e)
+        await update.message.reply_text(f"⚠️ DB error ({type(e).__name__}): {str(e)[:200]}")
+        return ConversationHandler.END
     await _delete_last(context, update.effective_chat.id)
     sent = await update.message.reply_text(
         "✏️ *What's your eFootball question?*\n\n"
@@ -717,7 +722,14 @@ async def ask_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Too long (max 600 chars). Please shorten your question.")
         return WAITING_QUESTION
 
-    return await _submit_question(update, context, text)
+    try:
+        return await _submit_question(update, context, text)
+    except Exception as e:
+        logger.error("ask_receive _submit_question failed: %s: %s", type(e).__name__, e)
+        await update.message.reply_text(
+            f"⚠️ Failed to submit question ({type(e).__name__}): {str(e)[:200]}\n\nPlease try again."
+        )
+        return ConversationHandler.END
 
 
 async def ask_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -735,12 +747,22 @@ async def ask_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_QUESTION
 
     photo_file_id = update.message.photo[-1].file_id
-    return await _submit_question(update, context, caption, photo_file_id)
+    try:
+        return await _submit_question(update, context, caption, photo_file_id)
+    except Exception as e:
+        logger.error("ask_receive_photo failed: %s: %s", type(e).__name__, e)
+        await update.message.reply_text(f"⚠️ Failed to submit ({type(e).__name__}): {str(e)[:200]}")
+        return ConversationHandler.END
 
 
 async def ask_receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice_file_id = update.message.voice.file_id
-    return await _submit_question(update, context, "🎤 Voice question", voice_file_id=voice_file_id)
+    try:
+        return await _submit_question(update, context, "🎤 Voice question", voice_file_id=voice_file_id)
+    except Exception as e:
+        logger.error("ask_receive_voice failed: %s: %s", type(e).__name__, e)
+        await update.message.reply_text(f"⚠️ Failed to submit ({type(e).__name__}): {str(e)[:200]}")
+        return ConversationHandler.END
 
 
 # ── Add Comment (user_data flag approach — avoids ConversationHandler/callback issues) ──

@@ -1,5 +1,5 @@
 -- eFootball Q&A Bot — Supabase Schema
--- Run this ONCE in Supabase → SQL Editor → New Query
+-- Safe to run multiple times (uses IF NOT EXISTS / IF NOT EXISTS for columns)
 
 CREATE TABLE IF NOT EXISTS questions (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -16,6 +16,14 @@ CREATE TABLE IF NOT EXISTS questions (
     post_number     INTEGER,
     voice_file_id   TEXT
 );
+-- Add columns that may be missing if the table already existed
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS full_name       TEXT;
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS answered_at     TEXT;
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS channel_msg_id  BIGINT;
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS photo_file_id   TEXT;
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS post_number     INTEGER;
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS voice_file_id   TEXT;
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS tag             TEXT DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS comments (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

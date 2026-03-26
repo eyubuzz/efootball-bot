@@ -297,7 +297,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _is_subscribed(context.bot, user.id):
         await _send_gate(update, context)
         return
-    ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+    try:
+        ensure_user_profile(user.id, user.full_name or "Unknown", user.username or "")
+    except Exception as e:
+        logger.error("ensure_user_profile failed for %s: %s", user.id, e)
+        await update.message.reply_text(
+            "⚠️ Database connection error. Please try again in a moment."
+        )
+        return
 
     args = context.args
 

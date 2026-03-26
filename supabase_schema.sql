@@ -69,3 +69,14 @@ CREATE TABLE IF NOT EXISTS scheduled_posts (
     published     INTEGER DEFAULT 0,
     created_at    TEXT
 );
+
+-- IMPORTANT: Disable Row Level Security on all tables.
+-- The bot uses the service_role key which bypasses RLS anyway,
+-- but disabling it here ensures the anon key also works.
+ALTER TABLE questions       DISABLE ROW LEVEL SECURITY;
+ALTER TABLE comments        DISABLE ROW LEVEL SECURITY;
+ALTER TABLE comment_votes   DISABLE ROW LEVEL SECURITY;
+ALTER TABLE user_profiles   DISABLE ROW LEVEL SECURITY;
+ALTER TABLE follows         DISABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_settings  DISABLE ROW LEVEL SECURITY;
+ALTER TABLE scheduled_posts DISABLE ROW LEVEL SECURITY;

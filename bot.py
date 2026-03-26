@@ -324,12 +324,12 @@ async def send_comments_individual(
         f"<i>{'🏷️ ' + tag_label + '  · ' if tag_label else ''}"
         f"{total} comment{'s' if total != 1 else ''}</i>"
     )
-    sent = await context.bot.send_message(chat_id, header, parse_mode="HTML")
+    sent = await context.bot.send_message(chat_id, header, parse_mode="HTML", disable_web_page_preview=True)
     sent_ids.append(sent.message_id)
 
     if not comments:
         sent = await context.bot.send_message(
-            chat_id, "<i>No comments yet — be the first!</i>", parse_mode="HTML"
+            chat_id, "<i>No comments yet — be the first!</i>", parse_mode="HTML", disable_web_page_preview=True
         )
         sent_ids.append(sent.message_id)
     else:
@@ -360,7 +360,8 @@ async def send_comments_individual(
                     sent_ids.append(sticker_msg.message_id)
                     # Buttons on a separate text message (stickers can't have keyboards)
                     sent = await context.bot.send_message(
-                        chat_id, caption, parse_mode="HTML", reply_markup=vote_kb
+                        chat_id, caption, parse_mode="HTML", reply_markup=vote_kb,
+                        disable_web_page_preview=True,
                     )
                     msg_map[c["id"]] = sent.message_id
                     sent_ids.append(sent.message_id)
@@ -385,6 +386,7 @@ async def send_comments_individual(
                         f"{body}\n\n{caption}",
                         parse_mode="HTML",
                         reply_markup=vote_kb,
+                        disable_web_page_preview=True,
                     )
                     msg_map[c["id"]] = sent.message_id
                     sent_ids.append(sent.message_id)
@@ -392,7 +394,8 @@ async def send_comments_individual(
                 logger.error("Error sending comment %s: %s", c["id"], e)
                 try:
                     sent = await context.bot.send_message(
-                        chat_id, caption, parse_mode="HTML", reply_markup=vote_kb
+                        chat_id, caption, parse_mode="HTML", reply_markup=vote_kb,
+                        disable_web_page_preview=True,
                     )
                     msg_map[c["id"]] = sent.message_id
                     sent_ids.append(sent.message_id)
@@ -1765,50 +1768,45 @@ async def weekly_digest(context: ContextTypes.DEFAULT_TYPE):
         logger.error("Weekly digest failed: %s", e)
 
 
-# ── Admin: broadcast v2.1 ─────────────────────────────────────────────────────
+# ── Admin: /update broadcast ──────────────────────────────────────────────────
 
-async def broadcast_v2_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def update_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Usage: /update <message text>
+    Sends the given text to all users as an update announcement.
+    """
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Admin only.")
         return
 
-    # Include admin in the broadcast list even if no one else has started yet
-    all_ids  = get_all_user_ids()
-    user_ids = list(dict.fromkeys(all_ids + [update.effective_user.id]))  # deduplicated
-    if not user_ids:
+    message_text = " ".join(context.args).strip() if context.args else ""
+    if not message_text:
         await update.message.reply_text(
-            "⚠️ No users found yet. Ask users to start the bot with /start first, then broadcast."
+            "Usage: /update <your message>\n\n"
+            "Example:\n/update 🔧 *v2.2 Update*\n\nNew features:\n✅ Comments\n✅ Stickers"
         )
         return
 
-    status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users…")
+    all_ids  = get_all_user_ids()
+    user_ids = list(dict.fromkeys(all_ids + [update.effective_user.id]))
 
-    message = (
-        "🔧 *eBuzzNation Q&A Bot — v2.1 Update*\n\n"
-        "We fixed several issues. Here's what's working now:\n\n"
-        "✅ *Ask Question* — fixed, no more freezing\n"
-        "✅ *Persistent data* — your questions & comments are never lost\n"
-        "✅ *Daily limit* — max 3 questions per day per user\n"
-        "✅ *Duplicate detection* — similar questions are flagged\n"
-        "✅ *Rejection reason* — admin can now send a reason when declining\n\n"
-        "📋 `/mystatus` — view all your submitted questions\n"
-        "🔍 `/search` — search approved Q&As by keyword\n"
-        "🎤 Voice & 📷 photo questions supported\n\n"
-        "Tap *✏️ Ask Question* to get started! 👇"
-    )
+    if not user_ids:
+        await update.message.reply_text("⚠️ No users found yet.")
+        return
+
+    status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users…")
 
     sent_count, fail_count = 0, 0
     for uid in user_ids:
         try:
             await context.bot.send_message(
                 chat_id=uid,
-                text=message,
+                text=message_text,
                 parse_mode="Markdown",
             )
             sent_count += 1
         except Exception:
             fail_count += 1
-        await asyncio.sleep(0.05)  # ~20 msg/sec, well within Telegram limits
+        await asyncio.sleep(0.05)
 
     await status_msg.edit_text(
         f"✅ *Broadcast complete!*\n\n"
@@ -1915,7 +1913,7 @@ def main():
     app.add_handler(CommandHandler("discover",     discover_command))
     app.add_handler(CommandHandler("mystatus",     mystatus_command))
     app.add_handler(CommandHandler("search",       search_command))
-    app.add_handler(CommandHandler("broadcast_v2", broadcast_v2_command))
+    app.add_handler(CommandHandler("update", update_broadcast_command))
     app.add_handler(CommandHandler("cancel",       cancel))
 
     # Reply keyboard shortcuts

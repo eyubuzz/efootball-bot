@@ -19,8 +19,8 @@ _log = _logging.getLogger(__name__)
 def _http() -> httpx.Client:
     global _client
     if _client is None:
-        url = os.getenv("SUPABASE_URL", "").rstrip("/")
-        key = os.getenv("SUPABASE_KEY", "")
+        url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+        key = os.getenv("SUPABASE_KEY", "").strip()
         if not url:
             raise RuntimeError("SUPABASE_URL env var is not set")
         if not key:

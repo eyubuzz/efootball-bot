@@ -1,3 +1,4 @@
 python-telegram-bot[job-queue]==20.7
 python-dotenv==1.0.1
 fpdf2==2.7.9
+supabase==2.3.0

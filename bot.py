@@ -94,6 +94,7 @@ TAGS = {
     "potw":        ("🏆 POTW",                 "#POTW"),
     "contract":    ("📝 Nominating Contract",   "#NominatingContract"),
     "epoints":     ("💎 eFootball Point",       "#eFootballPoint"),
+    "division":    ("🏅 Division",             "#Division"),
 }
 
 POWERED_BY = '\n\n<b>Powered By <a href="https://t.me/ebuzznation">eBuzzNation</a></b>'
@@ -201,10 +202,10 @@ async def _send_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_comments_view(question_id: int, page: int, bot_username: str):
-    """Return (text, keyboard) for the given comments page."""
+    """Return (text, keyboard, parse_mode) for the given comments page."""
     row = get_question(question_id)
     if not row:
-        return "⚠️ Question not found.", InlineKeyboardMarkup([])
+        return "⚠️ Question not found.", InlineKeyboardMarkup([]), "HTML"
 
     tag_info    = TAGS.get(row["tag"] or "", ("", ""))
     tag_label   = tag_info[0]
@@ -215,40 +216,57 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
     total_pages = max(1, (total + COMMENTS_PER_PAGE - 1) // COMMENTS_PER_PAGE)
     page = max(1, min(page, total_pages))
 
-    lines = [f"💬 *Question #{post_num} — Comments*"]
+    lines = [f"💬 <b>Question #{post_num} — Comments</b>"]
     if tag_label:
-        lines.append(f"🏷️ _{tag_label}_  {tag_hashtag}")
+        lines.append(f"🏷️ <i>{html.escape(tag_label)}</i>  {tag_hashtag}")
     lines.append(f"📄 Page {page}/{total_pages}  ·  {total} comment{'s' if total != 1 else ''}")
     lines.append("━" * 22)
 
     if not comments:
-        lines.append("\n_No comments yet — be the first!_")
+        lines.append("\n<i>No comments yet — be the first!</i>")
     else:
         for i, c in enumerate(comments, 1):
             aura = get_user_aura(c["user_id"])
-            name = c["full_name"] or "Anonymous"
-            # Media indicator
+            name = html.escape(c["full_name"] or "Anonymous")
+            pf   = c.get("photo_file_id") or ""
             if c.get("voice_file_id"):
-                body = "🎤 _Voice message_"
-            elif c.get("photo_file_id"):
-                body = "📷 _Photo_"
+                body = "🎤 <i>Voice message</i>"
+            elif pf.startswith("sticker:"):
+                body = "🎭 <i>Sticker</i>"
+            elif pf.startswith("anim:"):
+                body = "🎞 <i>GIF</i>"
+            elif pf:
+                body = "📷 <i>Photo</i>"
             else:
-                body = c["comment"] or ""
-            lines.append(f"\n*{i}.* 👤 *{name}*  ⚡{aura}")
-            lines.append(body)
+                body = html.escape(c["comment"] or "")
+            profile_url = f"https://t.me/{bot_username}?start=u_{c['user_id']}"
+            profile_tag = f'\n<i><a href="{profile_url}">{name} ⚡{aura} aura</a></i>'
+            lines.append(f"\n<b>{i}.</b> 👤 <b>{name}</b>  ⚡{aura}")
+            lines.append(body + profile_tag)
 
     lines.append("\n" + "━" * 22)
     text = "\n".join(lines)
 
     buttons = []
 
-    # Vote + reply row per comment
+    # Vote + reply + media-view row per comment
     for i, c in enumerate(comments, 1):
-        buttons.append([
+        row_btns = [
             InlineKeyboardButton(f"👍 {c['likes']}",    callback_data=f"up_{c['id']}_{question_id}_{page}"),
             InlineKeyboardButton(f"👎 {c['dislikes']}", callback_data=f"dn_{c['id']}_{question_id}_{page}"),
             InlineKeyboardButton(f"↩️ #{i}",            callback_data=f"rp_{c['id']}_{question_id}_{page}"),
-        ])
+        ]
+        buttons.append(row_btns)
+        # Media view button on its own row
+        pf = c.get("photo_file_id") or ""
+        if c.get("voice_file_id"):
+            buttons.append([InlineKeyboardButton("🎤 Listen", callback_data=f"vm_{c['id']}")])
+        elif pf.startswith("sticker:"):
+            buttons.append([InlineKeyboardButton("🎭 View Sticker", callback_data=f"vm_{c['id']}")])
+        elif pf.startswith("anim:"):
+            buttons.append([InlineKeyboardButton("🎞 View GIF", callback_data=f"vm_{c['id']}")])
+        elif pf:
+            buttons.append([InlineKeyboardButton("📷 View Photo", callback_data=f"vm_{c['id']}")])
 
     # Navigation
     nav = [
@@ -257,37 +275,64 @@ def build_comments_view(question_id: int, page: int, bot_username: str):
         InlineKeyboardButton("➡️", callback_data=f"vc_{question_id}_{page + 1}") if page < total_pages else InlineKeyboardButton(" ", callback_data="noop"),
     ]
     buttons.append(nav)
-
-    # Add comment — separate row
     buttons.append([InlineKeyboardButton("✏️ Add Comment", callback_data=f"ac_{question_id}")])
 
-    return text, InlineKeyboardMarkup(buttons)
+    return text, InlineKeyboardMarkup(buttons), "HTML"
 
 
 def _channel_keyboard(question_id: int, count: int, bot_username: str) -> InlineKeyboardMarkup:
-    """Two-button keyboard for channel posts: Comment | Read Comments."""
+    """Two-button keyboard for channel posts: Comment | Read (N)."""
     link_view = f"https://t.me/{bot_username}?start=c_{question_id}"
     link_add  = f"https://t.me/{bot_username}?start=a_{question_id}"
+    read_label = f"💬 Read ({count})" if count > 0 else "💬 Read Comments"
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✏️ Comment",        url=link_add),
-        InlineKeyboardButton("💬 Read Comments",  url=link_view),
+        InlineKeyboardButton("✏️ Comment", url=link_add),
+        InlineKeyboardButton(read_label,   url=link_view),
     ]])
 
 
+def _build_channel_caption(row: dict, count: int) -> str:
+    """Build the full channel post caption including comment count."""
+    q_text      = html.escape(row["question"] or "")
+    tag_hashtag = TAGS.get(row.get("tag") or "", ("", ""))[1]
+    count_line  = f"\n💬 <b>{count} Comment{'s' if count != 1 else ''}</b>" if count > 0 else ""
+    return (
+        f"❓ <b>eFootball Question</b>\n\n"
+        f"{q_text}"
+        f"{count_line}\n\n"
+        f"{tag_hashtag}"
+        f"{POWERED_BY}"
+    )
+
+
 async def update_channel_button(context: ContextTypes.DEFAULT_TYPE, question_id: int):
-    """Edit the channel post buttons to show the updated comment count."""
+    """Edit the channel post caption + buttons to show the updated comment count."""
     row = get_question(question_id)
     if not row or not row["channel_msg_id"]:
         return
-    count = get_comment_count(question_id)
+    count    = get_comment_count(question_id)
+    caption  = _build_channel_caption(row, count)
+    keyboard = _channel_keyboard(question_id, count, context.bot.username)
     try:
-        await context.bot.edit_message_reply_markup(
-            chat_id=CHANNEL_ID,
-            message_id=row["channel_msg_id"],
-            reply_markup=_channel_keyboard(question_id, count, context.bot.username),
-        )
+        if row.get("photo_file_id") or row.get("voice_file_id"):
+            await context.bot.edit_message_caption(
+                chat_id=CHANNEL_ID,
+                message_id=row["channel_msg_id"],
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        else:
+            await context.bot.edit_message_text(
+                chat_id=CHANNEL_ID,
+                message_id=row["channel_msg_id"],
+                text=caption,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
     except Exception as e:
-        logger.warning("Could not update channel button: %s", e)
+        logger.warning("Could not update channel post: %s", e)
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -323,8 +368,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 context.user_data["_last_msg"] = sent.message_id
                 return
-            text, keyboard = build_comments_view(question_id, 1, context.bot.username)
-            sent = await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            text, keyboard, _pm = build_comments_view(question_id, 1, context.bot.username)
+            sent = await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
             context.user_data["_last_msg"] = sent.message_id
             return
 
@@ -340,9 +385,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["_awaiting_comment_qid"] = question_id
                 sent = await update.message.reply_text(
                     f"✏️ *Add comment to Question #{row['post_number'] or question_id}*\n\n"
-                    f"Send your text, 🎤 voice, or 📷 photo (3–500 chars for text).\n"
-                    f"Send /cancel to go back.",
+                    f"Send text, 🎤 voice, 📷 photo, 🎭 sticker, or 🎞 GIF.",
                     parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow"),
+                    ]]),
                 )
                 context.user_data["_conv_prompt"] = sent.message_id
                 return
@@ -515,9 +562,11 @@ async def sched_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _delete_last(context, update.effective_chat.id)
     sent = await update.message.reply_text(
         "📅 *Schedule a Channel Post*\n\n"
-        "Send the post text (or a photo with caption).\n"
-        "Send /cancel to abort.",
+        "Send the post text (or a photo with caption).",
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow"),
+        ]]),
     )
     context.user_data["_conv_prompt"] = sent.message_id
     return SCHED_TEXT
@@ -602,9 +651,11 @@ async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["_awaiting_question"] = True
     sent = await update.message.reply_text(
         "✏️ *What's your eFootball question?*\n\n"
-        "Send text (10–600 chars), a 📷 photo with caption, or a 🎤 voice message.\n"
-        "Send /cancel to go back.",
+        "Send text (10–600 chars), a 📷 photo with caption, 🎤 voice, 🎭 sticker, or 🎞 GIF.",
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow"),
+        ]]),
     )
     context.user_data["_conv_prompt"] = sent.message_id
 
@@ -774,9 +825,11 @@ async def _open_comment_prompt(query, context: ContextTypes.DEFAULT_TYPE, questi
     context.user_data["_awaiting_comment_qid"] = question_id
     sent = await query.message.reply_text(
         f"{label} *Question #{display_num}*\n\n"
-        f"Send your text, 🎤 voice, or 📷 photo.\n"
-        f"Send /cancel to go back.",
+        f"Send text, 🎤 voice, 📷 photo, 🎭 sticker, or 🎞 GIF.",
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow"),
+        ]]),
     )
     context.user_data["_conv_prompt"] = sent.message_id
 
@@ -825,7 +878,13 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_file_id = None
         voice_file_id = None
         text_body = ""
-        if msg.voice:
+        if msg.sticker:
+            photo_file_id = "sticker:" + msg.sticker.file_id
+            text_body = "🎭 Sticker question"
+        elif msg.animation:
+            photo_file_id = "anim:" + msg.animation.file_id
+            text_body = "🎞 GIF question"
+        elif msg.voice:
             voice_file_id = msg.voice.file_id
             text_body = "🎤 Voice question"
         elif msg.photo:
@@ -871,7 +930,11 @@ async def comment_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice_file_id = None
     text_body     = ""
 
-    if msg.voice:
+    if msg.sticker:
+        photo_file_id = "sticker:" + msg.sticker.file_id
+    elif msg.animation:
+        photo_file_id = "anim:" + msg.animation.file_id
+    elif msg.voice:
         voice_file_id = msg.voice.file_id
     elif msg.photo:
         photo_file_id = msg.photo[-1].file_id
@@ -967,6 +1030,48 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
+    # Cancel flow (replaces /cancel for ask & comment prompts)
+    if data == "cancel_flow":
+        await query.answer()
+        context.user_data.pop("_awaiting_question", None)
+        context.user_data.pop("_awaiting_comment_qid", None)
+        context.user_data.pop("_conv_prompt", None)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        sent = await query.message.reply_text("✅ Cancelled.", reply_markup=MAIN_KEYBOARD)
+        context.user_data["_last_msg"] = sent.message_id
+        return
+
+    # View media on a comment
+    if data.startswith("vm_"):
+        await query.answer()
+        comment_id = int(data[3:])
+        rows = get_comments_page.__module__ and None  # just need the comment
+        # Fetch comment from DB via a direct get
+        from database import _get as _db_get
+        crows = _db_get("comments", {"id": f"eq.{comment_id}"})
+        if not crows:
+            await query.answer("Media not found.", show_alert=True)
+            return
+        c = crows[0]
+        chat_id = query.message.chat_id
+        pf = c.get("photo_file_id") or ""
+        vf = c.get("voice_file_id") or ""
+        try:
+            if vf:
+                await context.bot.send_voice(chat_id=chat_id, voice=vf)
+            elif pf.startswith("sticker:"):
+                await context.bot.send_sticker(chat_id=chat_id, sticker=pf[8:])
+            elif pf.startswith("anim:"):
+                await context.bot.send_animation(chat_id=chat_id, animation=pf[5:])
+            elif pf:
+                await context.bot.send_photo(chat_id=chat_id, photo=pf)
+        except Exception as e:
+            await query.answer(f"Could not send media: {e}", show_alert=True)
+        return
+
     # ── Subscription gate: verify ──
     if data == "verify":
         if not await _is_subscribed(context.bot, query.from_user.id):
@@ -1015,8 +1120,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("vc_"):
         await query.answer()
         _, qid, page = data.split("_")
-        text, keyboard = build_comments_view(int(qid), int(page), context.bot.username)
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        text, keyboard, _pm = build_comments_view(int(qid), int(page), context.bot.username)
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         return
 
     # ── Vote up ──
@@ -1024,9 +1129,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, cid, qid, page = data.split("_")
         likes, dislikes = vote_comment(int(cid), query.from_user.id, "up")
         await query.answer(f"👍 {likes}")
-        text, keyboard = build_comments_view(int(qid), int(page), context.bot.username)
+        text, keyboard, _pm = build_comments_view(int(qid), int(page), context.bot.username)
         try:
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         except Exception:
             pass
         return
@@ -1036,9 +1141,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, cid, qid, page = data.split("_")
         likes, dislikes = vote_comment(int(cid), query.from_user.id, "down")
         await query.answer(f"👎 {dislikes}")
-        text, keyboard = build_comments_view(int(qid), int(page), context.bot.username)
+        text, keyboard, _pm = build_comments_view(int(qid), int(page), context.bot.username)
         try:
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         except Exception:
             pass
         return
@@ -1089,40 +1194,38 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update_status(question_id, "approved", tag_key)
         assign_post_number(question_id, post_num)
 
-        q_text = html.escape(row['question'])
-        channel_caption = (
-            f"❓ <b>eFootball Question</b>\n\n"
-            f"{q_text}\n\n"
-            f"{tag_hashtag}"
-            f"{POWERED_BY}"
-        )
-        btn      = _channel_keyboard(question_id, 0, context.bot.username)
+        row["tag"] = tag_key  # ensure tag is set for caption builder
+        channel_caption = _build_channel_caption(row, 0)
+        btn = _channel_keyboard(question_id, 0, context.bot.username)
         bot_link = f"https://t.me/{context.bot.username}?start=c_{question_id}"
 
-        # Post to channel — photo, voice, or text
-        if row["voice_file_id"]:
+        # Post to channel — sticker/GIF/photo/voice/text
+        pf = row.get("photo_file_id") or ""
+        if row.get("voice_file_id"):
             msg = await context.bot.send_voice(
-                chat_id=CHANNEL_ID,
-                voice=row["voice_file_id"],
-                caption=channel_caption,
-                parse_mode="HTML",
-                reply_markup=btn,
+                chat_id=CHANNEL_ID, voice=row["voice_file_id"],
+                caption=channel_caption, parse_mode="HTML", reply_markup=btn,
             )
-        elif row["photo_file_id"]:
+        elif pf.startswith("sticker:"):
+            await context.bot.send_sticker(chat_id=CHANNEL_ID, sticker=pf[8:])
+            msg = await context.bot.send_message(
+                chat_id=CHANNEL_ID, text=channel_caption,
+                parse_mode="HTML", disable_web_page_preview=True, reply_markup=btn,
+            )
+        elif pf.startswith("anim:"):
+            msg = await context.bot.send_animation(
+                chat_id=CHANNEL_ID, animation=pf[5:],
+                caption=channel_caption, parse_mode="HTML", reply_markup=btn,
+            )
+        elif pf:
             msg = await context.bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=row["photo_file_id"],
-                caption=channel_caption,
-                parse_mode="HTML",
-                reply_markup=btn,
+                chat_id=CHANNEL_ID, photo=pf,
+                caption=channel_caption, parse_mode="HTML", reply_markup=btn,
             )
         else:
             msg = await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=channel_caption,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                reply_markup=btn,
+                chat_id=CHANNEL_ID, text=channel_caption,
+                parse_mode="HTML", disable_web_page_preview=True, reply_markup=btn,
             )
         set_channel_msg_id(question_id, msg.message_id)
 
@@ -1646,7 +1749,7 @@ def main():
     _keyboard_texts = filters.Text([
         "✏️ Ask Question", "📋 My Status", "🔍 Discover", "👤 Profile", "ℹ️ Help",
     ])
-    _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND & ~_keyboard_texts
+    _comment_filter = (filters.TEXT | filters.VOICE | filters.PHOTO | filters.Sticker.ALL | filters.Animation) & ~filters.COMMAND & ~_keyboard_texts
     app.add_handler(MessageHandler(_comment_filter, comment_receive), group=0)
     app.add_handler(MessageHandler(filters.Text(["✏️ Ask Question"]), ask_start), group=1)
     app.add_handler(sched_conv, group=1)
@@ -1669,7 +1772,7 @@ def main():
     app.add_handler(MessageHandler(filters.Text(["📋 My Status"]), mystatus_command))
 
     # Unsupported media (photos are handled in the ask conversation above)
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL | filters.VOICE | filters.Sticker.ALL, unsupported_media))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, unsupported_media))
 
     # Inline callback (view, vote, admin approve/reject, follow, discover)
     app.add_handler(CallbackQueryHandler(button_callback))

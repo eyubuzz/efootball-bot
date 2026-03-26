@@ -878,8 +878,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if prompt_id:
         await _try_delete(context, update.effective_chat.id, prompt_id)
     await _delete_last(context, update.effective_chat.id)
+    context.user_data.pop("_reject_qid", None)
+    context.user_data.pop("_awaiting_comment_qid", None)
     context.user_data.clear()
-    sent = await update.message.reply_text("Cancelled.", reply_markup=MAIN_KEYBOARD)
+    sent = await update.message.reply_text("✅ Cancelled.", reply_markup=MAIN_KEYBOARD)
     context.user_data["_last_msg"] = sent.message_id
     return ConversationHandler.END
 
@@ -1601,6 +1603,7 @@ def main():
     app.add_handler(CommandHandler("mystatus",     mystatus_command))
     app.add_handler(CommandHandler("search",       search_command))
     app.add_handler(CommandHandler("broadcast_v2", broadcast_v2_command))
+    app.add_handler(CommandHandler("cancel",       cancel))
 
     # Reply keyboard shortcuts
     app.add_handler(MessageHandler(filters.Text(["👤 Profile"]),   profile_command))
